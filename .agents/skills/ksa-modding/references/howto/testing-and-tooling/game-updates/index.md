@@ -1,0 +1,6 @@
+# Subdirectories
+
+* [decompile-the-game-for-reference](decompile-the-game-for-reference/index.md) - Decompile the game's assemblies with ilspycmd into a gitignored folder stamped with the game version, or into a private repository where two builds produce a readable diff
+* [pin-the-game-build-with-a-hashed-lock](pin-the-game-build-with-a-hashed-lock/index.md) - Commit SHA-256 digests of the referenced game DLLs plus the build number so local builds, a private CI mirror and the running game agree on one KSA build, stamp that build into the mod and poll the version endpoint from a scheduled job
+* [track-the-game-api-your-mod-uses](track-the-game-api-your-mod-uses/index.md) - Read the TypeRef and MemberRef tables of your built DLL into a committed document that CI checks, and turn reflected Harmony targets into compile-time dependencies with never-called pin methods
+* [upgrade-a-mod-to-a-new-ksa-build](upgrade-a-mod-to-a-new-ksa-build/index.md) - A repeatable procedure of refreshing the pinned binaries and decompiled corpus, diffing only what the mod touches, classifying each coupling by how it fails, fixing, recording the new build and flying it, plus runtime design that latches a single feature as degraded instead of crashing

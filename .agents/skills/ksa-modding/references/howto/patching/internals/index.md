@@ -1,0 +1,5 @@
+# Subdirectories
+
+* [call-private-game-members-through-reflection-and-delegates](call-private-game-members-through-reflection-and-delegates/index.md) - How KSA mods reach private and internal members that the game exposes no API for, with AccessTools field refs, plain reflection, method delegates and UnsafeAccessor, and how each form fails when a member moves
+* [patch-a-private-game-method-by-name](patch-a-private-game-method-by-name/index.md) - How a Harmony patch attaches to a private, protected or overloaded KSA method that cannot be written with typeof or nameof, with string names, manual lookups, explicit parameter arrays, TargetMethods and injected fields, and how each fails when the target moves
+* [patch-around-aggressive-inlining](patch-around-aggressive-inlining/index.md) - Why a Harmony prefix or postfix on a KSA method marked AggressiveInlining can silently never run, what a local test shows about when the JIT bypasses a detour, and four patterns the pinned mods use to change behaviour without depending on it

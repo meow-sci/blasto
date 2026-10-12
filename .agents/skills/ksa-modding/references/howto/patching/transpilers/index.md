@@ -1,0 +1,6 @@
+# Subdirectories
+
+* [identify-a-call-by-its-argument-il](identify-a-call-by-its-argument-il/index.md) - How KSA transpilers pick one instruction among many similar ones by what surrounds it: the loads that feed its arguments, a unique neighbouring call, a UI label literal, or the instruction that consumes its result
+* [insert-calls-into-a-game-method-at-an-il-anchor](insert-calls-into-a-game-method-at-an-il-anchor/index.md) - How KSA mods add draw, filter or snapshot calls inside a stock method by inserting instructions before or after an anchor, and how labels and exception-block markers decide whether jumps reach the insertion
+* [swap-one-call-inside-a-game-method-with-a-transpiler](swap-one-call-inside-a-game-method-with-a-transpiler/index.md) - How KSA mods make a large game method call their own code instead of one helper without copying the method, in five shapes, from a same-signature operand edit to adapters that translate arguments and results
+* [write-a-harmony-transpiler](write-a-harmony-transpiler/index.md) - How to read the real IL of a KSA method, build the instruction rewrite, prove the match count and survive Harmony re-running transpilers, with four worked shapes: retarget a call, insert at an anchor, replace an instruction run and filter a read

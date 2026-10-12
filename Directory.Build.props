@@ -1,0 +1,31 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>13.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- The pinned loader packages are cached locally; avoid making ordinary builds
+         depend on an online vulnerability feed in restricted or offline environments. -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <!-- Game references are compile-time only. Resolve the sibling checkout by default,
+       while allowing KSA_DLL_DIR or -p:KSAFolder=... on other machines. -->
+  <PropertyGroup>
+    <KSAFolder Condition="'$(KSAFolder)' == '' and '$(KSA_DLL_DIR)' != ''">$([MSBuild]::EnsureTrailingSlash('$(KSA_DLL_DIR)'))</KSAFolder>
+    <KSAFolder Condition="'$(KSAFolder)' == ''">$(MSBuildThisFileDirectory)../ksa-game-assemblies/current/dll/</KSAFolder>
+
+    <!-- A local StarMap install can be supplied through STARMAP_DLL_DIR or
+         -p:StarMapFolder=... . When it is absent, the matching cached NuGet assets
+         provide the compile references. -->
+    <StarMapFolder Condition="'$(StarMapFolder)' == '' and '$(STARMAP_DLL_DIR)' != ''">$([MSBuild]::EnsureTrailingSlash('$(STARMAP_DLL_DIR)'))</StarMapFolder>
+    <StarMapFolder Condition="'$(StarMapFolder)' == ''">$(KSAFolder)</StarMapFolder>
+  </PropertyGroup>
+
+  <Target Name="ValidateKSAAssemblies" BeforeTargets="ResolveAssemblyReferences"
+          Condition="'$(RequiresKSAAssemblies)' == 'true' and !Exists('$(KSAFolder)/KSA.dll')">
+    <Error Text="KSA reference assemblies not found at '$(KSAFolder)/KSA.dll'. Set KSA_DLL_DIR or pass -p:KSAFolder=... to the directory containing KSA.dll and the Brutal/Planet assemblies." />
+  </Target>
+</Project>

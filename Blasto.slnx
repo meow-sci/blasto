@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Blasto.GameMod/Blasto.GameMod.csproj" />
+  <Project Path="Blasto.Tests/Blasto.Tests.csproj" />
+</Solution>

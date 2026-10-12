@@ -1,0 +1,11 @@
+# Game Feature
+
+* [Find where KSA keeps user data and choose where a mod stores its config and data files](overview.md) - The folder map derived from Constants.DocumentsFolderPath and how StarMap redirects it, then five placements for a mod's own files - beside the DLL, a subfolder of the documents folder, a separate data folder, a path derived from the Logs folder, or the instance-aware constant
+
+# How-To
+
+* [Derive the data folder from the mod's log folder, with a temp-directory fallback](choose-where-a-mod-stores-its-files-4.md) - Probe the plausible KSA user folders for an existing Logs directory, log there, and store course files in a sibling KSAGolf/Courses folder, falling back to the temp directory when no KSA folder is found - and why Constants.LogsFolderPath is the better source
+* [Keep settings beside the mod DLL, resolved from the loaded assembly](choose-where-a-mod-stores-its-files-1.md) - Resolve the mod folder from Assembly.Location with fallbacks, put settings.ini, hud.ini or colors.cfg there, and understand what a redeploy or an update does to a file that is both shipped and live
+* [Keep user data in Documents/mods/<mod> apart from the install, and seed the live config from a template](choose-where-a-mod-stores-its-files-3.md) - Split a mod into a read-only install folder and a user-writable data folder with its own paths class, ship a commented template under a different name, and copy it to the live file only when that file is missing
+* [Know the folder map and redirect it with a StarMap instance path](choose-where-a-mod-stores-its-files-5.md) - List every path derived from Constants.DocumentsFolderPath, see how StarMap finds the override from the command line or an environment variable before the manifest is read, and reuse its recipe for patching a static property getter with AccessTools.PropertyGetter and a prefix
+* [Store config in a mod-named subfolder under Constants.DocumentsFolderPath](choose-where-a-mod-stores-its-files-2.md) - Put a mod's files in Documents/My Games/Kitten Space Agency/<ModName> so updates leave them alone, build the path from the game constant so a StarMap instance path moves it, and compare the folder names and the mods that use MyDocuments directly

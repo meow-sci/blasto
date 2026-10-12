@@ -1,0 +1,6 @@
+# Subdirectories
+
+* [coexist-with-other-mods-patching-the-same-method](coexist-with-other-mods-patching-the-same-method/index.md) - How Harmony orders and re-runs patches when several mods target one game method, and how KSA mods order, share and merge patches so that features and neighbouring mods do not break each other
+* [patch-methods-that-run-on-background-threads](patch-methods-that-run-on-background-threads/index.md) - Which KSA methods run on vehicle workers, Bepu threads and the thread pool, what a Harmony patch may touch there, and how results and data cross between those threads and the main thread
+* [run-cleanup-or-recover-from-exceptions-with-a-finalizer](run-cleanup-or-recover-from-exceptions-with-a-finalizer/index.md) - Why a postfix does not run when the original throws and a finalizer does, how KSA mods use finalizers to restore state and swallow failures, and how to scope a patch on a shared method to the mod's own calls
+* [skip-the-original-method-with-a-prefix](skip-the-original-method-with-a-prefix/index.md) - When and how to return false from a Harmony prefix in KSA to replace, veto, rewrite or consume a call, what a skipped original still owes the game, and when a postfix is safer

@@ -1,0 +1,6 @@
+# Subdirectories
+
+* [isolate-patch-failures-and-fault-proof-patch-bodies](isolate-patch-failures-and-fault-proof-patch-bodies/index.md) - How KSA mods localise damage when a game update breaks one Harmony target and how they write patch bodies that cannot take the game's frame loop down, from per-class application to fault counters
+* [refuse-a-patch-and-roll-back-when-the-game-changes](refuse-a-patch-and-roll-back-when-the-game-changes/index.md) - How KSA mods treat a changed game method as a normal outcome by validating targets, throwing from transpilers, rolling back by Harmony id and publishing success flags, and when an anchor failure should stop the launch instead
+* [remove-your-patches-safely-at-runtime-and-at-exit](remove-your-patches-safely-at-runtime-and-at-exit/index.md) - How to remove only your own Harmony patches, from a main-thread hook, after nulling the delegates they call, and why StarMap's shutdown order means unload code usually finds nothing left to remove
+* [validate-patch-targets-and-detect-game-update-breakage](validate-patch-targets-and-detect-game-update-breakage/index.md) - How KSA mods resolve private game members in one validated place, let each feature refuse to load when a member moved, and make signature drift visible at build time by pinning public patch targets

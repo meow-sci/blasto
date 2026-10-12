@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Blasto.Tests</AssemblyName>
+    <RootNamespace>Blasto.Tests</RootNamespace>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <!-- Link only portable production source. This project deliberately has no KSA,
+       StarMap, Harmony, or native runtime references so it runs on a host machine. -->
+  <ItemGroup>
+    <Compile Include="../Blasto.GameMod/Core/**/*.cs" Link="Core/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../Blasto.GameMod/Persistence/BlastSave*.cs" Link="Persistence/%(Filename)%(Extension)" />
+    <Compile Include="../Blasto.GameMod/Rendering/TerrainShaderSource.cs" Link="Rendering/TerrainShaderSource.cs" />
+    <Compile Include="../Blasto.GameMod/Rendering/TerrainGpuCapabilities.cs" Link="Rendering/TerrainGpuCapabilities.cs" />
+  </ItemGroup>
+</Project>

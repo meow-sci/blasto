@@ -1,0 +1,8 @@
+# Subdirectories
+
+* [drive-a-running-game-through-a-file-bridge](drive-a-running-game-through-a-file-bridge/index.md) - Poll a folder for JSON command files from the frame postfix so a shell script, a test runner or an agent can pause, step, load saves and script gameplay in a live game, with the bridge kept out of player installs
+* [live-tweak-constants-in-game](live-tweak-constants-in-game/index.md) - Reflect public static fields into ImGui sliders, persist only the values that differ from the defaults and dump the result as C# source to paste back into the code
+* [measure-and-budget-mod-performance](measure-and-budget-mod-performance/index.md) - Wrap hot code in zero-cost-when-off scopes with periodic reports, read a mod pass's GPU cost from the game profiler with a pinned camera, throttle per-frame work on wall-clock intervals and state versions and pre-compile hot paths on a background thread
+* [run-unattended-scenarios-and-report-a-verdict](run-unattended-scenarios-and-report-a-verdict/index.md) - Run a developer-only state machine from a request file at launch, load a save and play a scripted engagement, log tagged lines that a shell harness turns into an exit code, and compare variants with rank statistics
+* [take-screenshots-from-code](take-screenshots-from-code/index.md) - Ask the game's own ScreenshotCapture for a UI-free frame, collect the file with a manifest of the instant, and hold the main view at a scripted pose until the warm-up frames settle
+* [visual-regression-for-mods](visual-regression-for-mods/index.md) - Capture frames at the same simulated instant, then diff variants, build contact sheets and animations and compute a temporal standard-deviation map to separate a real change from render noise

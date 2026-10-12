@@ -1,0 +1,11 @@
+# Game Feature
+
+* [Borrow the main camera, hand it back and arbitrate between camera users](overview.md) - How a mod takes the player's main view, records what it changes, returns each half only if the player did not change it meanwhile, and shares the view with other features or mods
+
+# How-To
+
+* [Capture the baseline pose, follow, mode and tidal locking, blend back on release and detect a second writer](borrow-the-main-camera-and-hand-it-back-4.md) - gatOS' director captures everything it will change at Take, restores it after a release blend, and stands down rather than fight when the controller faulted, another mod replaced it, or the mode or follow changed
+* [Hand back the field of view first and the follow only if it is still the borrower's, with explicit StandDown, Yield, Hold, GiveBack and Take decisions](borrow-the-main-camera-and-hand-it-back-2.md) - KSAGolf keeps the borrowing rules in a KSA-free Sim layer with a thin KsaWorld adapter, always returns the field of view and restores the follow only when it is unchanged; the ViewClaim decision table is headless-tested
+* [Rank several camera users with a pure ViewClaim ladder and drive the claimants in claim order](borrow-the-main-camera-and-hand-it-back-5.md) - KSArmory's chase, sight, camera windows, watch camera and developer bridge share the main view through a headless-tested ViewClaim ladder where a loser yields without restoring and the bridge's held pose is just another claimant
+* [Record mode, follow target and field of view before the first write, stand down when the player changes either half and restore the halves separately](borrow-the-main-camera-and-hand-it-back-1.md) - KSArmory's KsaWorld helpers record the main view before borrowing it, hand it back in two halves, step from the GUI hook, a hidden-HUD prefix and an after-frame fallback, and forget a recording across a save load
+* [Record the main view before the first write when flying another craft or a first-person kitten](borrow-the-main-camera-and-hand-it-back-3.md) - KSAStructures records mode, follow target and field of view with RememberMainView before borrowing the view for the office computer and the first-person kitten and hands them back with TryHandBackMainView from Leave

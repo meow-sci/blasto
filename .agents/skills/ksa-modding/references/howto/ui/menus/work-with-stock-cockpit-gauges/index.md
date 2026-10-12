@@ -1,0 +1,11 @@
+# Game Feature
+
+* [Add to, drive and hide the stock cockpit gauges and navball](overview.md) - How KSA's XML-defined gauge canvases are loaded, drawn and fed, and five ways mods add a button, rewrite a button's state, force a panel visible, hide the flight HUD or paint on the navball
+
+# How-To
+
+* [Add a stock-looking gauge button: register an enum at immediate load and append the Button with an XML patch](work-with-stock-cockpit-gauges-1.md) - Add an AUTOSTAGE toggle to the EngineControl gauge panel by appending a Button element with a KittenExtensions XML patch, registering its marker enum in GaugeButtonFlightComputer.EnumTypes at StarMapImmediateLoad and answering ToggleEnum, IsSet and IsFlightComputerDisabled in prefixes
+* [Draw a marker on the stock navball: replicate the game's marker maths and paint on the foreground draw list](work-with-stock-cockpit-gauges-5.md) - Convert a direction from the ecliptic into the navball control frame with the same matrices NavBallRenderer uses, copy the marker shader's size and rim-fade constants, and draw the glyph on ImGui's foreground draw list because the navball is rendered by a draw callback
+* [Hide the stock flight HUD with GaugeCanvas.SetEnabled and restore only what you changed](work-with-stock-cockpit-gauges-4.md) - Disable every enabled, not AlwaysEnabled GaugeCanvas while a replacement HUD is shown, remember which ones you switched off, restore them on exit, unload or self-disable, and pause while the game's LAYOUTS window is open because saved layouts capture the enabled flag
+* [Re-enable a stock gauge button and rewrite its tooltip with Harmony postfixes on GaugeButtonFlightComputer](work-with-stock-cockpit-gauges-2.md) - Postfix IsDisabled and PackData on the concrete gauge button and prefix the private Vehicle.Hovered so the stock Auto burn button works, lights and explains itself for a burn executed with RCS on an engineless vehicle
+* [Show the stock engine panel for a craft with no engines: IsContextVisible and AreAllEnginesInactive postfixes plus a throttle write](work-with-stock-cockpit-gauges-3.md) - Postfix GaugeCanvas.IsContextVisible so the Engines-only canvas shows, postfix Vehicle.AreAllEnginesInactive to withhold the No active engines alert, and write the throttle gauge's value into the private manual inputs between the GUI pass and UpdateGauges

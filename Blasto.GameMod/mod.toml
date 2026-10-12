@@ -1,0 +1,7 @@
+name = "Blasto"
+description = "Persistent terrain effects from rocket exhaust in Kitten Space Agency."
+version = "0.1.2"
+author = "meow sci"
+
+[StarMap]
+EntryAssembly = "Blasto"

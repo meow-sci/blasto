@@ -34,14 +34,19 @@ public sealed class BlastSiteStore
         foreach (var mark in detached) Add(mark);
         Version++;
     }
-    public BlastMark? Deposit(SurfaceHit hit, double thrust, double dt, double epoch)
+    public BlastMark? Deposit(SurfaceHit hit, double thrust, double dt, double epoch,
+        double buildupRate = 1, double erosionThreshold = 15)
     {
         if (!hit.IsValid() || !double.IsFinite(thrust) || !double.IsFinite(dt) ||
+            !double.IsFinite(buildupRate) || buildupRate <= 0 ||
+            !double.IsFinite(erosionThreshold) || erosionThreshold < 0 ||
             !double.IsFinite(epoch) || thrust <= 0 || dt <= 0 || dt > 1 || hit.Incidence <= .05 ||
             !double.IsFinite(hit.Radius) || hit.Radius is < .25 or > 120) return null;
         double response = hit.Profile switch { SurfaceKind.Martian => 1.35, SurfaceKind.Soil => .65, SurfaceKind.Rock => .08, _ => 1 };
         double pressure = thrust * hit.Incidence / (Math.PI * hit.Radius * hit.Radius);
-        double dose = response * Math.Max(pressure - 15, 0) * dt / 1800;
+        // Exhaust pressure and burn time matter equally on ascent, descent and while stationary.
+        // Buildup scales deposited exposure, not the engine's thrust or the pressure threshold.
+        double dose = response * Math.Max(pressure - erosionThreshold, 0) * dt / 1800 * buildupRate;
         if (dose <= 1e-7) return null;
         return DepositExposure(hit, dose, epoch);
     }

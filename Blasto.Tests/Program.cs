@@ -26,12 +26,18 @@ internal static class Program
         ("ordinary GPU limits above requirements pass", GpuLimitsAcceptOrdinaryValues),
         ("GPU capability requirements accept exact boundaries", GpuLimitsAcceptExactRequirements),
         ("genuinely insufficient GPU limits report actual and required values", GpuLimitsRejectInsufficientValues),
+        ("GPU tuning header and mark buffer ranges agree", GpuTuningLayout),
         ("replace rejects duplicate and malformed records atomically", ReplaceIsAtomic),
         ("nearby impacts on different bodies stay separate", BodyIdentitySeparatesSites),
         ("ray intersection handles analytic spheres, range, direction, and terrain height", RayIntersectionCases),
         ("grazing ray intersection continues beyond the old march limit", GrazingRayIntersectionContinuesToRange),
         ("non-finite terrain height during root refinement is rejected", NonFiniteHeightDuringBisectionIsRejected),
         ("sidecar round-trips and repeated loads replace without duplicates", SaveRoundTripAndRepeatedLoads),
+        ("legacy settings JSON imports the new visual tuning defaults", LegacySettingsImportNewDefaults),
+        ("finite visual tuning values round-trip without UI range caps", UncappedVisualSettingsRoundTrip),
+        ("invalid visual tuning values are rejected", InvalidVisualSettingsAreRejected),
+        ("visual tuning enlarges effective marks without mutating saved marks", VisualTuningPreservesSavedMarks),
+        ("erosion threshold and buildup rate control physical exposure", DepositUsesTunableThresholdAndRate),
         ("missing sidecar is treated as an empty optional save", MissingSidecarIsEmpty),
         ("sidecar rejects a native-save hash mismatch", SaveRejectsHashMismatch),
         ("sidecar rejects unsupported versions", SaveRejectsUnsupportedVersions),
@@ -143,6 +149,9 @@ internal static class Program
         IsNull(store.Deposit(hit, 10_000, double.NaN, 0), "NaN time step");
         IsNull(store.Deposit(hit, 10_000, 1.01, 0), "oversized time step");
         IsNull(store.Deposit(hit, 10_000, 1, double.PositiveInfinity), "infinite epoch");
+        IsNull(store.Deposit(hit, 10_000, 1, 0, buildupRate: -1), "negative buildup rate");
+        IsNull(store.Deposit(hit, 10_000, 1, 0, buildupRate: double.NaN), "NaN buildup rate");
+        IsNull(store.Deposit(hit, 10_000, 1, 0, erosionThreshold: double.PositiveInfinity), "infinite erosion threshold");
         IsNull(store.Deposit(hit with { CenterCcf = new Double3(double.NaN, 0, 0) }, 10_000, 1, 0),
             "non-finite center");
         IsNull(store.Deposit(hit with { Incidence = .05 }, 10_000, 1, 0), "grazing incidence");
@@ -357,7 +366,7 @@ internal static class Program
             MaxDescriptorSetStorageBuffersRaw: int.MinValue,
             MaxPerStageDescriptorStorageBuffersRaw: int.MinValue,
             MaxStorageBufferRangeRaw: int.MinValue,
-            RequiredStorageBufferRange: 5_136);
+            RequiredStorageBufferRange: (uint)BlastVisualMath.Range);
         Equal(0x80000000u, highBits.MaxBoundDescriptorSets, "descriptor-set limit keeps its high bit");
         Equal(0x80000000u, highBits.MaxPushConstantsSize, "push-constant limit keeps its high bit");
         Equal(0x80000000u, highBits.MaxDescriptorSetStorageBuffers, "descriptor storage-buffer limit keeps its high bit");
@@ -374,7 +383,7 @@ internal static class Program
             MaxDescriptorSetStorageBuffersRaw: 4,
             MaxPerStageDescriptorStorageBuffersRaw: 8,
             MaxStorageBufferRangeRaw: 16_384,
-            RequiredStorageBufferRange: 5_136);
+            RequiredStorageBufferRange: (uint)BlastVisualMath.Range);
 
         ordinary.EnsureSupported();
     }
@@ -386,8 +395,8 @@ internal static class Program
             MaxPushConstantsSizeRaw: 128,
             MaxDescriptorSetStorageBuffersRaw: 3,
             MaxPerStageDescriptorStorageBuffersRaw: 3,
-            MaxStorageBufferRangeRaw: 5_136,
-            RequiredStorageBufferRange: 5_136);
+            MaxStorageBufferRangeRaw: BlastVisualMath.Range,
+            RequiredStorageBufferRange: (uint)BlastVisualMath.Range);
 
         atBoundary.EnsureSupported();
     }
@@ -400,7 +409,8 @@ internal static class Program
             ("MaxPushConstantsSize", GpuCapabilities(maxPushConstantsSizeRaw: 127), "127", "128"),
             ("MaxDescriptorSetStorageBuffers", GpuCapabilities(maxDescriptorSetStorageBuffersRaw: 2), "2", "3"),
             ("MaxPerStageDescriptorStorageBuffers", GpuCapabilities(maxPerStageDescriptorStorageBuffersRaw: 2), "2", "3"),
-            ("MaxStorageBufferRange", GpuCapabilities(maxStorageBufferRangeRaw: 5_135), "5135", "5136"),
+            ("MaxStorageBufferRange", GpuCapabilities(maxStorageBufferRangeRaw: BlastVisualMath.Range - 1),
+                (BlastVisualMath.Range - 1).ToString(), BlastVisualMath.Range.ToString()),
         ];
 
         foreach (var (name, capabilities, actual, required) in insufficient)
@@ -417,13 +427,23 @@ internal static class Program
         int maxPushConstantsSizeRaw = 128,
         int maxDescriptorSetStorageBuffersRaw = 3,
         int maxPerStageDescriptorStorageBuffersRaw = 3,
-        int maxStorageBufferRangeRaw = 5_136) => new(
+        int maxStorageBufferRangeRaw = BlastVisualMath.Range) => new(
             maxBoundDescriptorSetsRaw,
             maxPushConstantsSizeRaw,
             maxDescriptorSetStorageBuffersRaw,
             maxPerStageDescriptorStorageBuffersRaw,
             maxStorageBufferRangeRaw,
-            RequiredStorageBufferRange: 5_136);
+            RequiredStorageBufferRange: (uint)BlastVisualMath.Range);
+
+    private static void GpuTuningLayout()
+    {
+        Equal(48, BlastVisualMath.HeaderSize, "three 16-byte header vectors");
+        Equal(80, BlastVisualMath.MarkStride, "five 16-byte mark vectors");
+        Equal(64, BlastVisualMath.MaximumMarks, "maximum uploaded marks");
+        Equal(5_168, BlastVisualMath.Range, "header plus the full mark array");
+        Equal(BlastVisualMath.HeaderSize + BlastVisualMath.MarkStride * BlastVisualMath.MaximumMarks,
+            BlastVisualMath.Range, "GPU storage range formula");
+    }
 
     private static void ReplaceIsAtomic()
     {
@@ -558,6 +578,143 @@ internal static class Program
         });
     }
 
+    private static void LegacySettingsImportNewDefaults()
+    {
+        const string legacyJson = """
+            {"SchemaVersion":1,"PatternVersion":1,"GameBuild":"legacy","UniverseSha256":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","Settings":{"Enabled":false,"DustEnabled":false,"Intensity":1.25},"Marks":[]}
+            """;
+        var document = BlastSaveCodec.Decode(Encoding.UTF8.GetBytes(legacyJson));
+
+        Equal(false, document.Settings.Enabled, "legacy enabled switch");
+        Equal(false, document.Settings.DustEnabled, "legacy dust switch");
+        Equal(1.25, document.Settings.Intensity, "legacy intensity");
+        Equal(3d, document.Settings.SizeMultiplier, "new default size multiplier");
+        Equal(8d, document.Settings.Visibility, "new default visibility");
+        Equal(3d, document.Settings.Darkness, "new default darkness");
+        Equal(2d, document.Settings.StreakStrength, "new default streak strength");
+        Equal(1d, document.Settings.CenterStrength, "new default center strength");
+        Equal(1d, document.Settings.EdgeSoftness, "new default edge softness");
+        Equal(0d, document.Settings.ErosionThreshold, "new default erosion threshold");
+        Equal(1d, document.Settings.DustOpacity, "new default dust opacity");
+        Equal(1d, document.Settings.DustSize, "new default dust size");
+        Equal(1d, document.Settings.DustSpeed, "new default dust speed");
+        Equal(3d, new BlastSettings().Intensity, "new buildup rate default");
+    }
+
+    private static void UncappedVisualSettingsRoundTrip()
+    {
+        var settings = new BlastSettings(Enabled: true, DustEnabled: true, Intensity: 100)
+        {
+            SizeMultiplier = 25,
+            Visibility = 8,
+            Darkness = 40,
+            StreakStrength = 12,
+            CenterStrength = 7,
+            EdgeSoftness = 4,
+            ErosionThreshold = 500,
+            DustOpacity = 10,
+            DustSize = 25,
+            DustSpeed = 30,
+        };
+        True(settings.IsValid(), "large finite values should not be clamped by backend validation");
+        BlastVisualMath.ValidateGpuSettings(settings);
+
+        WithTempDirectory(directory =>
+        {
+            File.WriteAllText(Path.Combine(directory, "universe.xml"), "<universe/>");
+            BlastSaveCodec.Write(directory, ValidDocument([ValidMark()]) with { Settings = settings });
+            var loaded = BlastSaveCodec.Read(directory)
+                ?? throw new InvalidOperationException("existing sidecar returned no document");
+            Equal(settings, loaded.Settings, "uncapped settings round-trip exactly");
+        });
+    }
+
+    private static void InvalidVisualSettingsAreRejected()
+    {
+        var baseline = new BlastSettings();
+        True((baseline with
+        {
+            Intensity = 0,
+            Visibility = 0,
+            Darkness = 0,
+            StreakStrength = 0,
+            CenterStrength = 0,
+            ErosionThreshold = 0,
+            DustOpacity = 0,
+            DustSpeed = 0,
+        }).IsValid(), "zero remains valid for non-size controls");
+        var largeRepresentableSize = baseline with { SizeMultiplier = 1000 };
+        True(largeRepresentableSize.IsValid(), "large practical size multipliers remain valid without gameplay caps");
+        BlastVisualMath.ValidateGpuSettings(largeRepresentableSize);
+        BlastSettings[] invalid =
+        [
+            baseline with { Intensity = double.NaN },
+            baseline with { Intensity = double.PositiveInfinity },
+            baseline with { Intensity = -1 },
+            baseline with { SizeMultiplier = 0 },
+            baseline with { SizeMultiplier = double.Epsilon },
+            baseline with { SizeMultiplier = float.Epsilon },
+            baseline with { SizeMultiplier = float.MaxValue },
+            baseline with { Visibility = -1 },
+            baseline with { Darkness = double.NaN },
+            baseline with { StreakStrength = double.PositiveInfinity },
+            baseline with { CenterStrength = -1 },
+            baseline with { EdgeSoftness = 0 },
+            baseline with { ErosionThreshold = double.NaN },
+            baseline with { DustOpacity = -1 },
+            baseline with { DustSize = 0 },
+            baseline with { DustSpeed = double.PositiveInfinity },
+        ];
+
+        foreach (var settings in invalid)
+            True(!settings.IsValid(), $"invalid visual setting must be rejected: {settings}");
+
+        var overFloatRange = baseline with { Visibility = (double)float.MaxValue * 2 };
+        True(!overFloatRange.IsValid(), "a finite double that cannot be represented by the GPU float layout must be rejected");
+        Throws<ArgumentOutOfRangeException>(
+            () => BlastVisualMath.ValidateGpuSettings(baseline with { SizeMultiplier = float.MaxValue }),
+            "GPU tuning validation rejects size products beyond float range even when no marks exist");
+    }
+
+    private static void VisualTuningPreservesSavedMarks()
+    {
+        var mark = ValidMark();
+        var before = mark;
+        var tuned = new BlastSettings
+        {
+            SizeMultiplier = 25,
+            Visibility = 8,
+        };
+
+        double effectiveRadius = BlastVisualMath.EffectiveRadius(mark, tuned);
+        double effectiveStrength = BlastVisualMath.EffectiveStrength(mark, tuned);
+        Near(mark.Radius * 25, effectiveRadius, 0, "effective rendered radius");
+        Near(1 - Math.Exp(-mark.Exposure * tuned.Visibility), effectiveStrength, 1e-15,
+            "visibility tuning increases bounded visual strength");
+        True(effectiveRadius > mark.Radius, "size tuning expands the rendered footprint");
+        True(effectiveStrength > mark.Strength, "visibility tuning increases the rendered site gain");
+        Equal(before, mark, "visual calculations leave persistent mark geometry and exposure unchanged");
+        Equal(10d, mark.Radius, "saved radius remains unchanged");
+        Equal(1.5d, mark.Exposure, "saved exposure remains unchanged");
+    }
+
+    private static void DepositUsesTunableThresholdAndRate()
+    {
+        var hit = Hit(radius: 10);
+        var baseline = new BlastSiteStore().Deposit(hit, thrust: 10_000, dt: 1, epoch: 1,
+            buildupRate: 1, erosionThreshold: 0)
+            ?? throw new InvalidOperationException("zero-threshold exposure should create a site");
+        var boosted = new BlastSiteStore().Deposit(hit, thrust: 10_000, dt: 1, epoch: 1,
+            buildupRate: 3, erosionThreshold: 0)
+            ?? throw new InvalidOperationException("boosted exposure should create a site");
+        Near(baseline.Exposure * 3, boosted.Exposure, 1e-12, "buildup rate scales deposited exposure");
+
+        var store = new BlastSiteStore();
+        IsNull(store.Deposit(hit, thrust: 10_000, dt: 1, epoch: 1,
+            buildupRate: 1, erosionThreshold: 500), "custom high erosion threshold");
+        Equal(0, store.Count, "threshold rejection creates no persistent site");
+    }
+
     private static void MissingSidecarIsEmpty()
     {
         WithTempDirectory(directory =>
@@ -629,6 +786,21 @@ internal static class Program
             "fragment material hook inserted");
         True(transformedFragment.Contains("BlastoHighlight(finalColor);\n    outColor = finalColor;", StringComparison.Ordinal),
             "projection diagnostic overrides the final fragment color");
+        True(transformedFragment.Contains("vec4 tuning0;", StringComparison.Ordinal) &&
+             transformedFragment.Contains("vec4 tuning1;", StringComparison.Ordinal),
+            "std430 header exposes both visual-tuning vectors before the mark array");
+        True(transformedFragment.Contains("center*(blasto.tuning1.x/shapeScale)", StringComparison.Ordinal),
+            "center strength tuning reaches the normalized shader coverage");
+        True(transformedFragment.Contains("fans*0.65*(blasto.tuning0.w/shapeScale)", StringComparison.Ordinal),
+            "streak strength tuning reaches the normalized shader coverage");
+        True(transformedFragment.Contains("/blasto.tuning1.y", StringComparison.Ordinal),
+            "edge softness tuning reaches the footprint feather");
+        True(transformedFragment.Contains("float opticalLog = log(coverage)+log(shapeScale)+log(strength);", StringComparison.Ordinal),
+            "shader keeps the uncapped optical product in log space");
+        True(transformedFragment.Contains("albedo *= exp(-exp(vec3(opticalLog+log(darkness))+log(profileResponse)));", StringComparison.Ordinal),
+            "darkness uses the uncapped optical response");
+        True(!transformedFragment.Contains("clamp((center + fans*0.65 + broad)*feather*mark.tangentUStrength.w,0.0,0.8)", StringComparison.Ordinal),
+            "visual response has no legacy hard ceiling");
         int projectionBranch = transformedFragment.IndexOf("if ((blasto.header.y & 1u) != 0u)", StringComparison.Ordinal);
         int normalSlab = transformedFragment.IndexOf("if (abs(dot(delta,N)) > max(6.0, radius*0.2))", StringComparison.Ordinal);
         True(projectionBranch >= 0 && normalSlab > projectionBranch,

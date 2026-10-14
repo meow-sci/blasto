@@ -29,7 +29,11 @@ public sealed class BlastSimulation : IDisposable
     private long _lastCapacityRejected;
     public bool Enabled { get => _enabled; set => _enabled = value; }
     public bool DustEnabled { get => _dust.Enabled; set => _dust.Enabled = value; }
-    public double Intensity { get; set; } = 1;
+    public double Intensity { get; set; } = 3;
+    public double ErosionThreshold { get => _dust.ErosionThreshold; set => _dust.ErosionThreshold = value; }
+    public double DustOpacity { get => _dust.OpacityMultiplier; set => _dust.OpacityMultiplier = value; }
+    public double DustSize { get => _dust.SizeMultiplier; set => _dust.SizeMultiplier = value; }
+    public double DustSpeed { get => _dust.SpeedMultiplier; set => _dust.SpeedMultiplier = value; }
     public double MaxRange { get => _probe.MaxRange; set => _probe.MaxRange = Math.Clamp(value, 20, 600); }
     public long CapturedSamples { get; private set; }
     public long AppliedSamples { get; private set; }
@@ -149,17 +153,17 @@ public sealed class BlastSimulation : IDisposable
                 }
                 if (!hit.HasValue) { SurfaceRejected++; Status = LastSurfaceResult; continue; }
                 SurfaceHits++;
-                double thrust = sample.Thrust * Math.Clamp(double.IsFinite(Intensity) ? Intensity : 1, 0, 10);
-                var mark = _store.Deposit(hit.Value, thrust, sample.BurnSeconds, sample.Epoch);
+                double thrust = sample.Thrust;
+                _dust.Emit(body, hit.Value, thrust, sample.BurnSeconds, sample.Epoch);
+                var mark = _store.Deposit(hit.Value, thrust, sample.BurnSeconds, sample.Epoch, Intensity, ErosionThreshold);
                 if (mark is null)
                 {
                     DepositRejected++;
                     Status = _store.Count >= _store.Capacity ? "Site capacity reached" :
-                        $"{body.Id}: terrain hit; exposure below erosion threshold (thrust {thrust:F0} N, radius {hit.Value.Radius:F2} m, {hit.Value.Profile})";
+                        $"{body.Id}: terrain hit; no mark buildup (thrust {thrust:F0} N, radius {hit.Value.Radius:F2} m, threshold {ErosionThreshold:G4} Pa, rate {Intensity:G4}, {hit.Value.Profile})";
                     continue;
                 }
                 AppliedSamples++;
-                _dust.Emit(body, hit.Value, thrust, sample.BurnSeconds, sample.Epoch);
                 Status = $"Engine exposure: {body.Id}; {_store.Count} persistent sites";
             }
             catch (Exception ex) { SurfaceErrors++; Status = "Surface sampling failed; affected nozzle skipped"; LogFault("Surface sample", ex.Message); }

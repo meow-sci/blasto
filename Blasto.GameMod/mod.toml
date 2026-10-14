@@ -1,6 +1,6 @@
 name = "Blasto"
 description = "Persistent terrain effects from rocket exhaust in Kitten Space Agency."
-version = "0.1.2"
+version = "0.1.3"
 author = "meow sci"
 
 [StarMap]

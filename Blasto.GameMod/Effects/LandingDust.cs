@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Blasto.Core;
+using Blasto.Persistence;
 using Blasto.Simulation;
 using Brutal.Numerics;
 using KSA;
@@ -11,21 +12,33 @@ namespace Blasto.Effects;
 /// <summary>Dedicated native volumetric bursts: at most twelve emitters and 384 live particles.</summary>
 public sealed class LandingDust : IDisposable
 {
-    private sealed record Owned(Celestial Body, ParticleEmitter<ParticleUpdateData, ParticleRenderData>.Handle Handle, double Expires);
+    private sealed record Owned(Celestial Body, ParticleEmitter<ParticleUpdateData, ParticleRenderData>.Handle Handle, double Expires, float BaseOpacity);
     private readonly List<Owned> _owned = new();
     private readonly Dictionary<(string, long, long, long), double> _lastEmission = new();
     private readonly Action<string> _log;
     private ParticleEmitterReference? _reference;
     private bool _failed;
     public bool Enabled { get; set; } = true;
+    public double ErosionThreshold { get; set; }
+    public double OpacityMultiplier { get; set; } = 1;
+    public double SizeMultiplier { get; set; } = 1;
+    public double SpeedMultiplier { get; set; } = 1;
     public int ActiveEmitters => _owned.Count;
     public LandingDust(Action<string> log) => _log = log;
+    public static void ValidateTuning(BlastSettings settings)
+    {
+        // These are float representability checks, not gameplay or mouse-drag limits.
+        if (!float.IsFinite((float)(settings.DustSpeed * 33.2)))
+            throw new ArgumentException("Dust speed produces particle velocities too large for the game renderer.");
+        if ((float)(settings.DustSize * .2) <= 0)
+            throw new ArgumentException("Dust size is too small for the game renderer.");
+    }
     public void Emit(Celestial body, SurfaceHit hit, double thrust, double dt, double epoch)
     {
         if (!Enabled || _failed || !GameSettings.Current.Graphics.Particles || _owned.Count >= 12 || dt <= 0) return;
         var key = (body.Id, (long)Math.Floor(hit.CenterCcf.X / 8), (long)Math.Floor(hit.CenterCcf.Y / 8), (long)Math.Floor(hit.CenterCcf.Z / 8));
         if (_lastEmission.TryGetValue(key, out double last) && epoch - last < .12) return;
-        double erosionRate = Math.Max(thrust * hit.Incidence / (Math.PI * hit.Radius * hit.Radius) - 15, 0);
+        double erosionRate = Math.Max(thrust * hit.Incidence / (Math.PI * hit.Radius * hit.Radius) - ErosionThreshold, 0);
         if (erosionRate < 5 || hit.Profile == SurfaceKind.Rock) return;
         ParticleEmitter<ParticleUpdateData, ParticleRenderData>? emitter = null;
         try
@@ -49,9 +62,12 @@ public sealed class LandingDust : IDisposable
             emitter.Drag = hit.Profile == SurfaceKind.Martian ? 1.6f : .3f;
             // Native screenspace volumetrics read GpuEmitterParams.Opacity, multiplied by particle
             // color alpha and a lifetime fade. Extra.z is not an opacity channel in this build.
-            emitter.Opacity = hit.Profile == SurfaceKind.Martian ? .42f : .24f;
+            float baseOpacity = hit.Profile == SurfaceKind.Martian ? .42f : .24f;
+            emitter.Opacity = (float)(baseOpacity * OpacityMultiplier);
             var rng = new Random(Random.Shared.Next());
-            double speed = Math.Clamp(Math.Sqrt(erosionRate) * .35, 3, 24);
+            // Snapshot values before the native particle worker invokes this spawn callback.
+            double speedMultiplier = SpeedMultiplier, sizeMultiplier = SizeMultiplier;
+            double speed = Math.Clamp(Math.Sqrt(erosionRate) * .35, 3, 24) * speedMultiplier;
             var normal = hit.NormalCcf; var u = hit.TangentU; var v = hit.TangentV;
             double spread = Math.Min(hit.Radius * .22, 5);
             bool mars = hit.Profile == SurfaceKind.Martian;
@@ -61,8 +77,8 @@ public sealed class LandingDust : IDisposable
                 var outward = u * Math.Cos(angle) + v * Math.Sin(angle);
                 var pos = outward * (Math.Sqrt(rng.NextDouble()) * spread) + normal * .18;
                 // Already in body-fixed local coordinates; identity LocalOffset avoids double rotation.
-                var velocity = outward * (speed * (.6 + rng.NextDouble() * .7)) + normal * (mars ? 2.0 : .7);
-                var p = ParticleUpdateData.Create(ToFloat(pos), (float)(1.6 + rng.NextDouble() * 1.5), (float)(.2 + rng.NextDouble() * .45));
+                var velocity = outward * (speed * (.6 + rng.NextDouble() * .7)) + normal * ((mars ? 2.0 : .7) * speedMultiplier);
+                var p = ParticleUpdateData.Create(ToFloat(pos), (float)(1.6 + rng.NextDouble() * 1.5), (float)((.2 + rng.NextDouble() * .45) * sizeMultiplier));
                 p.Velocity = ToFloat(velocity);
                 p.Color = mars ? new float4(.65f, .38f, .24f, 1) : new float4(.52f, .51f, .49f, 1);
                 p.Extra = new float4(.15f, 0, 0, 0);
@@ -70,7 +86,7 @@ public sealed class LandingDust : IDisposable
             };
             var handle = emitter.CreateHandle();
             body.AddEmitter(handle);
-            _owned.Add(new Owned(body, handle, epoch + 3.5));
+            _owned.Add(new Owned(body, handle, epoch + 3.5, baseOpacity));
             _lastEmission[key] = epoch;
         }
         catch (Exception ex)
@@ -115,6 +131,7 @@ public sealed class LandingDust : IDisposable
             var emitter = owned.Handle.TryGet();
             if (emitter is null)
             { owned.Body.RemoveEmitter(owned.Handle); _owned.RemoveAt(i); continue; }
+            emitter.Opacity = (float)(owned.BaseOpacity * OpacityMultiplier);
             if (!Enabled || epoch > owned.Expires) emitter.Kill();
             // Keep ownership until native fenced cleanup invalidates the handle; do not reacquire early.
         }

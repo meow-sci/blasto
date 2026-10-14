@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Blasto.Core;
+using Blasto.Persistence;
 using Brutal;
 using Brutal.Numerics;
 using Brutal.VulkanApi;
@@ -19,7 +20,7 @@ internal sealed unsafe class BlastRenderResources : IDisposable
     private readonly int _frames, _stride;
     private readonly VkDescriptorSet[] _sets;
     private readonly List<VkShaderModule> _modules = new();
-    private readonly (BlastMark Mark, double Distance)[] _nearest = new (BlastMark, double)[BlastGpuMark.MaximumMarks];
+    private readonly (BlastMark Mark, double Score, double Distance)[] _selected = new (BlastMark, double, double)[BlastGpuMark.MaximumMarks];
     private DescriptorSetLayoutEx? _setLayout;
     private DescriptorPoolEx? _pool;
     private BufferEx? _buffer;
@@ -81,7 +82,7 @@ internal sealed unsafe class BlastRenderResources : IDisposable
     }
 
     public VkDescriptorSet Prepare(IViewport viewport, int frame, Celestial body, IReadOnlyList<BlastMark> marks,
-        TerrainViewDiagnostics diagnostics, bool diagnosticHighlight)
+        TerrainViewDiagnostics diagnostics, bool diagnosticHighlight, BlastSettings settings)
     {
         if (_disposed || frame < 0 || frame >= _frames || viewport.ShaderSlot < 0 || viewport.ShaderSlot >= ViewportRegistry.MAX_VIEWPORTS)
             throw new InvalidOperationException("Blasto viewport/frame allocation no longer matches the game.");
@@ -97,44 +98,61 @@ internal sealed unsafe class BlastRenderResources : IDisposable
         var rotation = body.GetCce2Ccf();
         // Use the same precise relative origin as native planet rendering, including followed-body cameras.
         double3 cameraCcf = (-camera.GetPositionEgo(body)).Transform(rotation);
-        int count = 0;
+        int count = 0, eligible = 0;
         foreach (var mark in marks)
         {
             if (!string.Equals(mark.BodyId, body.Id, StringComparison.Ordinal) || !mark.IsValid()) continue;
             diagnostics.BodyMarkCount++;
             double distance = (Vector(mark.CenterCcf) - cameraCcf).LengthSquared();
             diagnostics.NearestMarkDistanceMeters = Math.Min(diagnostics.NearestMarkDistanceMeters, Math.Sqrt(distance));
-            diagnostics.StrongestMarkStrength = Math.Max(diagnostics.StrongestMarkStrength, mark.Strength);
-            if (mark.Strength < .001) { diagnostics.WeakMarkCount++; continue; }
-            if (distance > 5000 * 5000) { diagnostics.OutOfRangeMarkCount++; continue; }
+            double radius = BlastVisualMath.EffectiveRadius(mark, settings);
+            double strength = BlastVisualMath.EffectiveStrength(mark, settings);
+            BlastVisualMath.CheckedGpuFloat(radius, "Effective mark radius", positive: true);
+            BlastVisualMath.CheckedGpuFloat(strength, "Effective mark exposure");
+            diagnostics.StrongestMarkStrength = Math.Max(diagnostics.StrongestMarkStrength, strength);
+            if (strength <= 0) { diagnostics.WeakMarkCount++; continue; }
+            // Include any footprint that reaches the view range, even when its center is farther away.
+            if (Math.Sqrt(distance) > BlastVisualMath.ViewRangeMeters + radius * mark.Anisotropy)
+            { diagnostics.OutOfRangeMarkCount++; continue; }
+            eligible++;
+            double score = BlastVisualMath.ContributionScore(radius, mark.Anisotropy, strength, distance, settings);
             int insertion = count;
-            while (insertion > 0 && _nearest[insertion - 1].Distance > distance) insertion--;
+            while (insertion > 0 && ComesBefore(mark, score, distance, _selected[insertion - 1])) insertion--;
             if (insertion >= BlastGpuMark.MaximumMarks) continue;
             int last = Math.Min(count, BlastGpuMark.MaximumMarks - 1);
-            for (int j = last; j > insertion; j--) _nearest[j] = _nearest[j - 1];
-            _nearest[insertion] = (mark, distance);
+            for (int j = last; j > insertion; j--) _selected[j] = _selected[j - 1];
+            _selected[insertion] = (mark, score, distance);
             count = Math.Min(count + 1, BlastGpuMark.MaximumMarks);
         }
         var inverse = rotation.Inverse();
         for (int i = 0; i < count; i++)
         {
-            BlastMark mark = _nearest[i].Mark;
+            BlastMark mark = _selected[i].Mark;
             // Subtract in doubles before packing: no planet-scale float subtraction.
             double3 center = (Vector(mark.CenterCcf) - cameraCcf).Transform(inverse);
             double3 u = Vector(mark.TangentU).Transform(inverse), v = Vector(mark.TangentV).Transform(inverse);
-            var gpu = new BlastGpuMark { CenterRadius = new float4(float3.Pack(center), (float)mark.Radius),
-                TangentUStrength = new float4(float3.Pack(u), (float)mark.Strength),
+            float radius = BlastVisualMath.CheckedGpuFloat(BlastVisualMath.EffectiveRadius(mark, settings), "Effective mark radius", positive: true);
+            float strength = BlastVisualMath.CheckedGpuFloat(BlastVisualMath.EffectiveStrength(mark, settings), "Effective mark exposure");
+            diagnostics.LargestSelectedRadiusMeters = Math.Max(diagnostics.LargestSelectedRadiusMeters, radius);
+            var gpu = new BlastGpuMark { CenterRadius = new float4(float3.Pack(center), radius),
+                TangentUStrength = new float4(float3.Pack(u), strength),
                 TangentVAnisotropy = new float4(float3.Pack(v), (float)mark.Anisotropy),
                 TintRoughness = Tint(mark.Profile), Seed = unchecked((uint)mark.Seed), Profile = (uint)mark.Profile };
             MemoryMarshal.Write(bytes.Slice(BlastGpuMark.HeaderSize + i * BlastGpuMark.Size, BlastGpuMark.Size), in gpu);
         }
-        uint markCount = (uint)count;
-        MemoryMarshal.Write(bytes, in markCount);
-        uint flags = diagnosticHighlight ? 1u : 0u;
-        MemoryMarshal.Write(bytes.Slice(sizeof(uint)), in flags);
+        var header = new BlastGpuHeader { Count = (uint)count, Flags = diagnosticHighlight ? 1u : 0u,
+            Tuning0 = new float4((float)settings.SizeMultiplier, (float)settings.Visibility, (float)settings.Darkness, (float)settings.StreakStrength),
+            Tuning1 = new float4((float)settings.CenterStrength, (float)settings.EdgeSoftness, 0, 0) };
+        MemoryMarshal.Write(bytes, in header);
         diagnostics.SelectedMarkCount = count;
+        diagnostics.BudgetExcludedMarkCount = eligible - count;
         return _sets[slot];
     }
+
+    private static bool ComesBefore(BlastMark mark, double score, double distance,
+        (BlastMark Mark, double Score, double Distance) previous) =>
+        score > previous.Score || (score == previous.Score &&
+            (distance < previous.Distance || (distance == previous.Distance && mark.Id.CompareTo(previous.Mark.Id) < 0)));
 
     private static double3 Vector(Double3 v) => new(v.X, v.Y, v.Z);
     private static float4 Tint(SurfaceKind profile) => profile switch {
@@ -157,6 +175,6 @@ internal sealed unsafe class BlastRenderResources : IDisposable
         _setLayout?.Dispose(); _setLayout = null;
         foreach (var module in _modules) _owner.Device.DestroyShaderModule(module, null);
         _modules.Clear();
-        Array.Clear(_nearest);
+        Array.Clear(_selected);
     }
 }

@@ -29,7 +29,7 @@ internal static class TerrainShaderSource
         return source[..index] + replacement + source[(index + anchor.Length)..];
     }
 
-    // std430: 16-byte header, then five 16-byte vectors per mark. Matches BlastGpuMark exactly.
+    // std430: 48-byte header (uvec4 + two tuning vec4s), then five vectors per mark.
     internal const string FragmentDeclarations = """
 layout(location = 7) in vec3 blastoSurfacePosition;
 struct BlastoMark {
@@ -41,6 +41,8 @@ struct BlastoMark {
 };
 layout(std430, set = 2, binding = 13) readonly buffer BlastoMarks {
     uvec4 header;
+    vec4 tuning0; // size, visibility, darkness, streak strength (size/visibility applied when packing marks)
+    vec4 tuning1; // center strength, edge softness, reserved, reserved
     BlastoMark marks[];
 } blasto;
 bool blastoProjectedMark = false;
@@ -64,7 +66,7 @@ void BlastoMaterial(inout vec3 albedo, inout float roughness, inout vec3 normal)
         vec3 U = mark.tangentUStrength.xyz, V = mark.tangentVAnisotropy.xyz;
         vec3 N = normalize(cross(U,V));
         vec2 meters = vec2(dot(delta,U), dot(delta,V));
-        vec2 p = meters / vec2(radius*mark.tangentVAnisotropy.w, radius);
+        vec2 p = (meters / radius) / vec2(mark.tangentVAnisotropy.w, 1.0);
         // All fragment lanes evaluate these before the footprint-dependent branch.
         // Differentiating atan itself would also introduce a false spike at its +/-pi seam.
         vec2 dpdx = dFdx(p), dpdy = dFdy(p);
@@ -91,13 +93,28 @@ void BlastoMaterial(inout vec3 albedo, inout float roughness, inout vec3 normal)
         float center = exp(-r*r*65.0)*(0.55 + 0.3*irregular);
         float fans = rays * broken * exp(-r*1.8) * smoothstep(0.06,0.2,r);
         float broad = 0.15 * irregular * exp(-r*r*3.0);
-        float feather = 1.0-smoothstep(0.65+irregular*0.15,1.0,r);
-        float mask = clamp((center + fans*0.65 + broad)*feather*mark.tangentUStrength.w,0.0,0.8);
+        // A continuous border fade: larger softness values spread the fade across the footprint.
+        float feather = 1.0-exp(-8.0*(1.0-r)*(0.85+0.3*irregular)/blasto.tuning1.y);
+        // Factor out the largest weight so large typed controls cannot overflow the shape sum.
+        float shapeScale = max(1.0,max(blasto.tuning1.x,blasto.tuning0.w));
+        float coverage = (center*(blasto.tuning1.x/shapeScale) +
+            fans*0.65*(blasto.tuning0.w/shapeScale) + broad/shapeScale)*feather;
+        float strength = mark.tangentUStrength.w; // 1-exp(-saved exposure times live visibility gain)
+        // Optical response naturally approaches opaque without imposing a tuning-control ceiling.
+        float opacity = 0.0;
+        float darkness = blasto.tuning0.z;
+        vec3 profileResponse = vec3(0.7)+vec3(1.0)-mark.tintRoughness.rgb;
         // Multiply existing material detail; stock terrain lighting/shadows follow this evaluation.
-        albedo *= mix(vec3(1.0),mark.tintRoughness.rgb,mask);
-        roughness = mix(roughness,mark.tintRoughness.w,mask*0.5);
+        // Log products preserve tiny/large combinations and avoid infinity times zero.
+        if (coverage > 0.0 && strength > 0.0) {
+            float opticalLog = log(coverage)+log(shapeScale)+log(strength);
+            opacity = 1.0-exp(-exp(opticalLog));
+            if (darkness > 0.0)
+                albedo *= exp(-exp(vec3(opticalLog+log(darkness))+log(profileResponse)));
+        }
+        roughness = mix(roughness,mark.tintRoughness.w,opacity*0.5);
         vec3 radial = U*p.x + V*p.y;
-        normal = normalize(normal + radial*(coarse*mask*0.012));
+        normal = normalize(normal + radial*(coarse*opacity*0.012));
     }
 }
 """;

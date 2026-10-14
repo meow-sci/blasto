@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using Blasto.Core;
+using Blasto.Persistence;
 using Brutal;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
@@ -26,6 +27,22 @@ public sealed class TerrainBlastRenderer : IDisposable
     [ThreadStatic] private static RenderSwap? _active;
     public bool Enabled { get; set; } = true;
     public bool DiagnosticHighlight { get; set; }
+    private BlastSettings _settings = new();
+    public BlastSettings Settings
+    {
+        get => _settings;
+        set
+        {
+            BlastVisualMath.ValidateGpuSettings(value);
+            foreach (var mark in _marks())
+            {
+                if (!mark.IsValid()) continue;
+                BlastVisualMath.CheckedGpuFloat(BlastVisualMath.EffectiveRadius(mark, value), "Effective mark radius", positive: true);
+                BlastVisualMath.CheckedGpuFloat(BlastVisualMath.EffectiveStrength(mark, value), "Effective mark exposure");
+            }
+            _settings = value;
+        }
+    }
     public IReadOnlyList<TerrainViewDiagnostics> Views => _views;
     public int ActivePipelineCount => _resources.Count;
     public long BuildAttempts { get; private set; }
@@ -165,7 +182,7 @@ public sealed class TerrainBlastRenderer : IDisposable
             diagnostics.BodyId = body.Id;
             if (!body.IsBillboarded()) { diagnostics.Status = "Body uses distant rendering"; return; }
             if (_active != null) throw new InvalidOperationException("Nested forward planet render is unsupported.");
-            var set = resources.Prepare(inViewport, frameIndex, body, owner._marks(), diagnostics, owner.DiagnosticHighlight);
+            var set = resources.Prepare(inViewport, frameIndex, body, owner._marks(), diagnostics, owner.DiagnosticHighlight, owner.Settings);
             diagnostics.Status = diagnostics.SelectedMarkCount > 0 ? "Marks uploaded; waiting for terrain bind" :
                 diagnostics.BodyMarkCount == 0 ? "No saved marks on this body" :
                 diagnostics.WeakMarkCount == diagnostics.BodyMarkCount ? "Marks below visible strength" : "Marks outside 5 km view range";

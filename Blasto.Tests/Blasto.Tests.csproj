@@ -13,5 +13,6 @@
     <Compile Include="../Blasto.GameMod/Persistence/BlastSave*.cs" Link="Persistence/%(Filename)%(Extension)" />
     <Compile Include="../Blasto.GameMod/Rendering/TerrainShaderSource.cs" Link="Rendering/TerrainShaderSource.cs" />
     <Compile Include="../Blasto.GameMod/Rendering/TerrainGpuCapabilities.cs" Link="Rendering/TerrainGpuCapabilities.cs" />
+    <Compile Include="../Blasto.GameMod/Rendering/BlastVisualMath.cs" Link="Rendering/BlastVisualMath.cs" />
   </ItemGroup>
 </Project>

@@ -11,6 +11,8 @@ public sealed class TerrainViewDiagnostics
     public int BodyMarkCount { get; internal set; }
     public int WeakMarkCount { get; internal set; }
     public int OutOfRangeMarkCount { get; internal set; }
+    public int BudgetExcludedMarkCount { get; internal set; }
+    public double LargestSelectedRadiusMeters { get; internal set; }
     public double NearestMarkDistanceMeters { get; internal set; } = double.PositiveInfinity;
     public double StrongestMarkStrength { get; internal set; }
     public long RenderCalls { get; internal set; }
@@ -21,8 +23,9 @@ public sealed class TerrainViewDiagnostics
 
     internal void ResetSelection()
     {
-        SelectedMarkCount = BodyMarkCount = WeakMarkCount = OutOfRangeMarkCount = 0;
+        SelectedMarkCount = BodyMarkCount = WeakMarkCount = OutOfRangeMarkCount = BudgetExcludedMarkCount = 0;
         NearestMarkDistanceMeters = double.PositiveInfinity;
         StrongestMarkStrength = 0;
+        LargestSelectedRadiusMeters = 0;
     }
 }

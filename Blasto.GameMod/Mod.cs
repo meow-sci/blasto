@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Blasto.Core;
+using Blasto.Effects;
 using Blasto.Persistence;
 using Blasto.Rendering;
 using Blasto.Simulation;
@@ -50,7 +51,7 @@ public sealed partial class Mod
                 prefix: new HarmonyMethod(typeof(Mod), nameof(DrainCommands)) { priority = Priority.First });
             ApplySettings(_settings);
             _initialized = true;
-            _message = "Ready. Land or hover over dry terrain to create blast marks.";
+            _message = "Ready. Launch, land or hover over dry terrain to create blast marks.";
             Log("Initialized for KSA 2026.10.10.5554.");
         }
         catch (Exception ex)
@@ -87,10 +88,17 @@ public sealed partial class Mod
     private void ApplySettings(BlastSettings settings)
     {
         if (!settings.IsValid()) throw new ArgumentException("Invalid effect settings.");
+        LandingDust.ValidateTuning(settings);
+        // Validate products used by the GPU before committing any part of the new settings.
+        if (_renderer is { } renderer) { renderer.Settings = settings; renderer.Enabled = settings.Enabled; }
         _settings = settings;
         if (_simulation is { } simulation)
-        { simulation.Enabled = settings.Enabled; simulation.DustEnabled = settings.DustEnabled; simulation.Intensity = settings.Intensity; }
-        if (_renderer is { } renderer) renderer.Enabled = settings.Enabled;
+        {
+            simulation.Enabled = settings.Enabled; simulation.DustEnabled = settings.DustEnabled;
+            simulation.Intensity = settings.Intensity; simulation.ErosionThreshold = settings.ErosionThreshold;
+            simulation.DustOpacity = settings.DustOpacity; simulation.DustSize = settings.DustSize;
+            simulation.DustSpeed = settings.DustSpeed;
+        }
     }
 
     private void ResetSimulation()

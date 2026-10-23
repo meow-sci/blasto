@@ -55,7 +55,7 @@ The package is `dist/Blasto/`, containing `Blasto.dll`, `Blasto.deps.json` and `
 
 For a rendering check, expand **Diagnostics** and click **Place test mark below vehicle**. It creates a strong site with a stored radius of 20 m (60 m displayed at the default size multiplier) and enables **Highlight marks (diagnostic)**: a bright magenta terrain projection that ignores darkness and the normal height tolerance. The placement result updates after the next apply. Turn highlight off to inspect the natural streaks. If there is still no visible projection, **Copy diagnostics** captures the active pipelines, actual private descriptor binds, body, uploaded site count, distance, strength and exact GPU limits for troubleshooting. Highlight is temporary and is not saved.
 
-Restart KSA after changing the DLL. Terrain integration refuses other game assembly versions; source anchors and descriptor checks also stop an incompatible shader variant from replacing stock rendering. Inspect `[Blasto]` log messages and the status window if marks do not appear.
+Restart KSA after changing the DLL. Blasto does not check the game version; it attempts to run on any KSA build. Missing patch targets stop initialization, and source anchors and descriptor checks stop an incompatible shader variant from replacing stock rendering. Inspect `[Blasto]` log messages and the status window if marks do not appear.
 
 ## Saves and limits
 

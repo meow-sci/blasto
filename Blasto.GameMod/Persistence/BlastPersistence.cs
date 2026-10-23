@@ -58,7 +58,8 @@ internal sealed class BlastPersistence : IDisposable
         try
         {
             self._captures.Remove(__instance);
-            self._captures.Add(__instance, new BlastSaveDocument { Settings = self._settings(), Marks = self._store.Snapshot() });
+            self._captures.Add(__instance, new BlastSaveDocument { Settings = self._settings(), Marks = self._store.Snapshot(),
+                GameBuild = typeof(KSA.Program).Assembly.GetName().Version?.ToString() ?? "unknown" });
         }
         catch (Exception ex) { self.Report($"Could not capture blast marks: {ex.Message}"); }
     }

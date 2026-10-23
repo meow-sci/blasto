@@ -64,9 +64,8 @@ public sealed class TerrainBlastRenderer : IDisposable
         try
         {
             BlastGpuMark.AssertLayout();
-            // Descriptor binding numbers/stage flags are audited for this build, not inferred from spare fields.
-            if (typeof(PlanetRenderer).Assembly.GetName().Version?.ToString() != "2026.10.10.5554")
-                throw new NotSupportedException("The terrain integration targets KSA 2026.10.10.5554; stock terrain retained.");
+            // No game-version gate: the patch targets, private fields, transpiler shape, descriptor schema
+            // and shader anchors are each checked below or at pipeline build, and fail open to stock terrain.
             Patch(TerrainAccess.Build, postfix: nameof(AfterBuild));
             Patch(AccessTools.DeclaredMethod(typeof(PlanetRenderer), nameof(PlanetRenderer.Render)),
                 prefix: nameof(BeforeRender), transpiler: nameof(ReplaceForwardBinding), finalizer: nameof(AfterRender));

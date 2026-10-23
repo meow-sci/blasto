@@ -1,299 +1,453 @@
 ---
 name: upgrade-ksa
-description: Validate purrTTY against an upstream Kitten Space Agency (KSA) game update. Use when a new KSA build lands and you must decide whether purrTTY needs code changes. Enumerates every coupling point between purrTTY and KSA/Brutal/Planet/StarMap game code (Harmony patch targets, the render/Vulkan pipeline, ImGui backend, game-state APIs, the input chain, menu injection, lifecycle, build refs, and behavioral assumptions), and drives a diff-of-KSA → impact-on-purrTTY review. Requires the CURRENT (new) and PREVIOUS KSA decompiled sources to be supplied — never hard-codes machine paths.
+description: Validate Blasto against an upstream Kitten Space Agency (KSA) game update. Use when a new KSA build lands and you must decide whether Blasto needs code changes to run correctly on it. Enumerates every coupling point between Blasto and KSA/Brutal/Planet/StarMap game code (Harmony patch targets and the PlanetRenderer transpiler, private-field reflection, the private terrain pipeline/descriptor set 2, Planet shader source anchors, worker-thread nozzle capture, surface sampling, native dust particles, save/load hooks, UI hooks, lifecycle and build refs) and drives a diff-of-KSA → impact-on-Blasto review. Requires the CURRENT (new) and PREVIOUS KSA decompiled sources to be supplied — never hard-codes machine paths.
 ---
 
-# Upgrade / Re-validate purrTTY against a KSA game change
+# Upgrade / Re-validate Blasto against a KSA game change
 
-purrTTY is a terminal-emulator **mod** for KSA. It compiles against KSA's reference
-assemblies, **patches** several game methods with Harmony, injects a draw into KSA's
-render pipeline, drives a second ImGui context on a Brutal Vulkan backend, and reads
-live game state (vehicles/parts/camera). When the upstream game changes, any of that
-can break — sometimes at compile time, but the dangerous cases break **silently at
-runtime**. This skill is the checklist and method for deciding what, if anything,
-purrTTY must change.
+Blasto is a StarMap mod that leaves persistent rocket-exhaust marks and dust on terrain. It
+compiles against KSA's reference assemblies and then reaches deep into the game:
 
-Delegate to the **`ksa`** skill for how KSA game types/APIs/decomp work in general;
-this skill is specifically about purrTTY's *coupling surface* to those APIs.
+- It **replaces KSA's terrain pipelines** with private copies. These use transformed `Planet.*`
+  shaders and a cloned descriptor set 2 with an extra storage buffer at binding 13.
+- It **rewrites `PlanetRenderer.Render` IL** with a transpiler that swaps that set at the native
+  descriptor-bind call.
+- It **reads private `PlanetRenderer` fields**.
+- It **captures rocket-nozzle state on physics worker threads**.
+- It **drives the native particle system** and **hooks the save/load transaction**.
 
-## Required inputs — you MUST have both KSA snapshots
+When the game changes, any of this can break. Some breaks show up at compile time. Others make
+the whole mod refuse to load. The most dangerous ones render, simulate or save **silently
+wrong**. This skill is the checklist and method for deciding what Blasto must change for a new build.
 
-This skill compares two decompiled KSA source trees. **Do not proceed without them**;
-ask the user to supply the paths. Never hard-code paths — treat these as variables:
+Use the **`ksa`** skill for how KSA game types, APIs and the decomp work in general. Use the
+**`harmony`** skill for patch mechanics. This skill covers only Blasto's *coupling surface*.
+`INTEGRATION.md` is the repo's own boundary contract. Keep it consistent with what you find.
 
-- **`<current-ksa>`** — the **new** KSA build you are upgrading *to* (the one that changed).
-- **`<previous-ksa>`** — the KSA build purrTTY currently builds and runs against (the
-  last known-good baseline).
+## Required inputs: you MUST have both KSA snapshots
 
-Each snapshot is a KSA-game-assemblies checkout laid out as:
+This skill compares two decompiled KSA trees. **Do not proceed without them.** Ask the user for
+the paths. Never hard-code paths; treat these as variables:
+
+- **`<current-ksa>`**: the **new** KSA build you are upgrading *to*.
+- **`<previous-ksa>`**: the build Blasto was **last validated on**. The record is the pin line in
+  `README.md` / `INTEGRATION.md` / `VALIDATION.md` (there is no version check in code; see §1).
+  Don't trust whatever a "previous" folder happens to hold. If the folder is at some other build,
+  diff from the last validated build.
+
+Each snapshot is a KSA-game-assemblies checkout:
 
 ```
 <snapshot>/
-  decomp/        # decompiled C# sources, one folder/.csproj per assembly (KSA, Brutal.*, Planet.*)
-  dll/           # reference assemblies purrTTY compiles against ($(KSAFolder) points here)
-  version.json   # { build, date, fromRevision, toRevision, commits[] } — human-readable changelog
+  decomp/        # decompiled C#; folders are per NAMESPACE (decomp/KSA/PlanetRenderer.cs,
+                 # decomp/KSA.Rendering.Planet/PlanetViewportData.cs, decomp/RenderCore/…,
+                 # decomp/Brutal.VulkanApi/…), with one .csproj per assembly alongside
+  dll/           # reference assemblies Blasto compiles against ($(KSAFolder) points here)
+  Content/       # game assets, incl. Content/Core/Shaders/Planet/*.{vert,tesc,tese,frag}
+  version.json   # { build, date, fromRevision, toRevision, commits[] }: human-readable changelog
 ```
 
-If the user gives you only one tree, or only DLLs, say what's missing and what you can
-still check (a compile against the new DLLs) versus what you can't (behavioral/runtime
-coupling — see below).
+The default sibling checkout `../ksa-game-assemblies` is a git repo with **one commit per
+build**, with the commit subject set to the build string. Its `current/` folder holds whichever
+build was copied last. You can therefore take both snapshots from history:
+`git -C <repo> log --oneline` gives the SHAs, and
+`git -C <repo> diff <validated-sha> <new-sha> -- current/decomp/KSA/PlanetRenderer.cs` diffs one file.
 
-`version.json.commits[]` is the fastest first read: the changelog lines often name the
-subsystem that moved (rendering, input, vehicles, console), telling you where to focus.
-**But it can have gaps**: `fromRevision` is whatever the snapshot tool last saw, not
-necessarily `<previous-ksa>`'s `toRevision` (the 5402 snapshot listed only rev 5401 while the
-previous snapshot ended at 5348). If the two don't chain, the decomp diff is the only complete
-record — never conclude "nothing moved" from a short `commits[]`.
+If the user gives you only one tree, or only DLLs, say what's missing. Also say what you can
+still check (a compile against the new DLLs and the shader-anchor validation against the new
+`Content/`) and what you can't (behavioral coupling; see below).
 
-The baseline is purrTTY's **last validated** build, not whatever the `<previous-ksa>` folder happens
-to hold: if an intermediate build was never reviewed (the 5482 review found `<previous-ksa>` at 5438
-while purrTTY was last validated on 5402), diff from the last validated build instead. Snapshot trees
-that are git repos (one commit per build) make this easy:
-`git diff <validated-sha> <current-sha> -- current/decomp/<path>`.
+Read `version.json.commits[]` first. Lines mentioning terrain, planet rendering, shaders,
+tessellation, particles, engines/nozzles, physics/threading or saves tell you where to focus.
+**It can have gaps.** `fromRevision` is whatever the snapshot tool last saw, not necessarily
+the validated build's `toRevision`. If they don't chain, the decomp diff is the only complete
+record. Never conclude "nothing moved" from a short `commits[]`.
 
-## The core insight — compile ≠ safe
+## The core insight: Blasto fails closed, so a green build proves little
 
-purrTTY references some KSA members **directly** (the compiler catches those if they
-change) but couples to others in ways the compiler cannot see. Classify every finding by
-how it fails:
+Blasto deliberately **throws** on most drift instead of degrading. Every `Install` path runs
+inside `Mod.BeforeMain`'s try/catch. If any patch target is missing or a private field is gone,
+**the whole mod initializes nothing**: all patches are unpatched
+and the window reports `Initialization failed: …`. Each problem of that kind fails loudly, and
+there is no partial mode. The dangerous cases are the ones that still *pass* those checks:
 
 | Coupling kind | Breaks at | Detected by |
 |---|---|---|
-| Direct call to a referenced member (signature change) | **compile** | `dotnet build` against `<current-ksa>/dll` |
-| **Harmony patch target** (rename / removed / signature drift) | **runtime, load** | patch silently fails to apply — logged, not thrown (`Patcher` swallows per-patch) |
-| **Reflection** (string member names) | **runtime, silent** | member resolves to null; behavior degrades with no error |
-| **Behavioral / semantic** (render draw order, premultiplied alpha, input-chain order, coordinate-frame convention, the print funnel) | **runtime, silent wrong output** | nothing — only diffing KSA source + reasoning catches it |
-| **Asset id** (`ModLibrary.Get<>("UnlitMeshVert")`, `ModLibrary.Find("ModMenu")`) | **runtime** | throws / feature self-skips |
-| **Build ref** (a `$(KSAFolder)` DLL renamed/removed/split) | **compile / copy** | `dotnet build` (missing `<Reference>`) |
+| Direct call to a referenced member | **compile** | `dotnet build` against `<current-ksa>/dll` |
+| **Build ref** (DLL renamed/split) | **compile**, as CS0246/CS0234 type errors | Every `<Reference>` is `Exists(...)`-conditioned, so a renamed DLL is dropped *silently* and surfaces only as missing types |
+| **Harmony target / parameter name** | **load**: `MissingMethodException` or Harmony arg-binding error → whole mod disabled | Offline patch-apply harness (below), or the KSA log |
+| **Private-field reflection** (`TerrainAccess`) | **load**: `TerrainAccess` static init throws → whole mod disabled | Offline harness |
+| **Transpiler shape** (exactly one 6-arg `BindDescriptorSets<CommandBuffer>` in `PlanetRenderer.Render`) | **load**: transpiler throws → whole mod disabled | Offline harness (transpilers run at patch time) |
+| **Runtime schema checks** (set-2 descriptor counts, stage count 2/4, GPU limits, shader anchors) | **first terrain build**: private pipeline refused, stock terrain kept, `BuildFailures++` | Diagnostics window / `[Blasto]` log; `scripts/validate-shaders.sh` for anchors |
+| **Behavioral / semantic** (binding *numbers/stages* in set 2, pipeline-layout set order, coordinate frames, worker/main-thread ordering, `ThrustTime` meaning, particle opacity channel, save-call nesting) | **runtime, silent wrong output, or Vulkan validation errors / device loss** | Nothing automatic. Only diffing KSA source and reasoning about it catches these |
+| **Asset / content ids** (`PlanetFrag`, `PlanetImpact`, body ids `Luna`/`Mars`, biome names) | **runtime**: throw (feature self-disables) or silent misclassification | Source/asset diff |
 
-**The whole point of this skill** is the middle rows: the Harmony, reflection, and
-behavioral coupling that a green build will *not* catch. Budget most of your effort
-there.
+**The point of this skill** is the behavioral row. The loud failures will announce themselves.
+A semantic drift in the terrain pipeline can render garbage. It can also trigger validation
+errors inside **KSA's own terrain draw**, which affects every player, not just Blasto's feature.
+Budget most of your effort there.
 
 ## Workflow
 
-1. **Read `version.json` in both snapshots** — confirm you have the right two builds and
-   skim `commits[]` for subsystems that moved.
-2. **Build purrTTY against `<current-ksa>/dll`** to sweep up all compile-visible breaks
-   first (see [Build against the new KSA](#build-against-the-new-ksa)). Fix/triage those.
-3. **Walk the coupling catalog below.** For each touchpoint, open the named KSA type in
-   **both** `decomp/` trees and diff the specific member(s) purrTTY depends on. A quick
-   way to diff one type across snapshots:
+1. **Confirm the baseline.** Read the validated-build pin in the docs and `version.json` in
+   both snapshots. Skim `commits[]` for subsystems that moved.
+2. **Build Blasto against `<current-ksa>/dll`** to sweep up compile-visible breaks first (see
+   [Build and offline checks](#build-and-offline-checks)). Fix or triage those, including §9 ref
+   renames.
+3. **Run the shader-anchor validation** against `<current-ksa>/Content/Core/Shaders` (§3).
+4. **Walk the coupling catalog below.** For each touchpoint, open the named KSA type in
+   **both** trees and diff the specific members Blasto depends on:
    ```bash
-   diff <previous-ksa>/decomp/<Asm>/<Type>.cs <current-ksa>/decomp/<Asm>/<Type>.cs
+   diff <previous-ksa>/decomp/KSA/PlanetRenderer.cs <current-ksa>/decomp/KSA/PlanetRenderer.cs
    ```
-   (Assembly folder names match the DLL names, e.g. `KSA`, `Brutal.ImGuiApi`,
-   `Brutal.VulkanApi`, `Planet.Render.Core`.)
-4. **For each change, map it to the purrTTY file(s)** listed for that touchpoint and
-   decide: no-op / mechanical fix / behavioral redesign. Cross-reference
-   `docs/gotchas.md` — many touchpoints carry a numbered gotcha explaining the intent.
-5. **Report** using the [output format](#output-format): per touchpoint, the KSA delta,
-   the impact, the severity, and the concrete purrTTY change (or "no change needed").
+   `PlanetRenderer` is the single highest-value diff. Read the changed regions in full, not just
+   the hunks.
+5. **For each change, map it to the Blasto file(s)** listed for that touchpoint and decide
+   whether it needs no change, a mechanical fix or a behavioral redesign.
+6. **Report** using the [output format](#output-format).
+7. **Once the review clears (or the fixes land)**, record the
+   [new validated build](#recording-a-validated-build). There is no runtime guard, so users are
+   already running Blasto on the new build; the review decides whether that is safe.
 
-Do **not** silently edit purrTTY unless asked — the deliverable is a *review*. If asked
-to also fix, do the compile-visible fixes first, then propose the behavioral ones.
+Do **not** silently edit Blasto unless asked; the deliverable is a *review*. If asked to fix as
+well, do the compile-visible fixes first, then propose the behavioral ones, and record the validated build last.
 
 ---
 
 ## Coupling catalog
 
-Every place purrTTY reaches into game code, grouped by kind. Locations are purrTTY repo
-paths (stable within the repo); the KSA members are what to diff across the two snapshots.
-Line numbers are hints as of writing — navigate by symbol.
+Every place Blasto reaches into game code, grouped by kind. Paths are Blasto repo paths. The KSA
+members are what to diff across the two snapshots. Navigate by symbol; line numbers drift.
 
-### 1. Harmony patches — the most brittle surface
+### 1. Validated-build record (no runtime version guard)
 
-All in `purrTTY.GameMod`. A drifted target does **not** crash the mod (`Patcher.ApplyPatch`
-wraps each in try/catch and logs), so failures are invisible unless you check the log or
-reason about it here. Verify **type exists · method exists · exact parameter types ·
-semantics of the arm you depend on**.
+- Blasto has **no game-version check**; it attempts to run on any KSA build (the hard guard in
+  `TerrainBlastRenderer.Install` was removed after the 5638 review). Every other check in this
+  catalog still applies, so a drifted build fails at the specific touchpoint instead. This means a
+  new KSA build that ships before review **will** run Blasto's private terrain pipeline unreviewed.
+  That's why the behavioral checks below matter more than they did with the guard in place.
+- `Mod.cs` logs the running KSA version, and `BlastPersistence.Capture` stamps it into each
+  sidecar's `GameBuild` (informational, not validated on read). These are the first things to
+  check in a user's log when triaging.
+- The **last validated build** lives only in docs: the pin lines in `README.md`,
+  `INTEGRATION.md` and `VALIDATION.md`. Use those as `<previous-ksa>` unless the user says otherwise.
 
-| Patch (file) | KSA target & signature | Depends on | If KSA changes… |
-|---|---|---|---|
-| `Patch01` (`Patcher.cs`) — **required**, input gate | `KSA.Program.OnKey(GlfwWindow, GlfwKey, int, GlfwKeyAction, GlfwModifier)` prefix | `OnKey` being the single keyboard entry: since KSA 5482 it runs the gate chain and then calls the private `DispatchKeyEvent`, which holds the `Press`/`Repeat`/`Release` **switch arms**; that release-arm toggles (`ToggleFps`/`ToggleUi`/…) fire on `Release` | Signature drift → gate stops applying → terminal typing leaks into game controls. Semantics change (which actions fire on which arm) → the held-key model in `s_gameHeldKeys` may leak or strand keys. A new caller of `DispatchKeyEvent` (or another action dispatcher) that bypasses `OnKey` → that input leaks past the gate (this is how mouse bindings arrived — see `Patch04`). Re-read `Program.OnKey` **and** `DispatchKeyEvent` in full. |
-| `Patch02` (`Patcher.cs`) — optional, menu fallback | `KSA.Program.DrawProgramMenusHook()` postfix | It being an empty public method KSA calls inside its `BeginMenuBar()` right after the View menu; also `Program.MainViewport` (an `IGameViewport` since KSA 5402) whose `MenuBarInUse` is **read-only** — it is set via the public `IGameViewportLifecycle.SetMenuBarInUse(bool)` (the same call KSA's `DrawMenuBar` makes) | Hook removed/renamed → fallback menu disappears (only matters when ModMenu absent). `IGameViewportLifecycle`/`SetMenuBarInUse` gone → compile break; semantics drift → menu auto-hides / game hotkeys leak while open. |
-| `Patch03_HotkeyGuard` (`Patcher.cs`) — **required**, typing guard | `GameSettings.OnKeyAll` prefix (`ref bool __result`) | `Program.ConsoleWindow` static + `ConsoleWindow.IsOpen`; `ImGui.GetIO().WantTextInput` | `OnKeyAll` signature/return-model change → typing in mod text fields fires game hotkeys. `ConsoleWindow`/`IsOpen` rename → NRE guard or console-exemption logic wrong. |
-| `Patch04_MouseBindingGate` (`Patcher.cs`) — **required**, mouse-binding gate | private `KSA.Program.DispatchKeyEvent(in GlfwKeyEvent keyEvent)` prefix (`ref bool __result`; the patch takes `GlfwKeyEvent keyEvent` **by value** — Harmony dereferences the `in` arg) | `Program.OnMouseButton` dispatching mouse-bound actions via `Input.MouseBound(button) && DispatchKeyEvent(new GlfwKeyEvent(window, action, button, mods))` (KSA 5482, rev 5449); `GlfwKeyEvent.{IsMouse,Button,Action}` (mouse `Press`/`Release` only); returning `false` = "not handled" so `OnMouseButton` falls through to ordinary click/camera handling; the swallowed-press model `s_swallowedButtons` | Private target — rename/signature drift → patch fails (logged) → clicking a player-bound mouse button while a terminal owns the keyboard fires game actions. A new mouse-dispatch path that skips `DispatchKeyEvent`, or `GlfwKeyEvent` losing `IsMouse`, → same leak. |
-| `ConsoleWindowPrintPatch` (`Patches/ConsoleWindowPrintPatch.cs`) — optional, game-console capture | `ConsoleWindow.Print(ReadOnlySpan<char>, ImColor8, int)` postfix | **The single-sink funnel**: all string/char console output routing through this exact overload | **Brutal-version-sensitive.** Older API was `Print(string, uint, int, ConsoleLineType)`. If a new build prints via `u8`/byte-span/`ImString` overloads that call `AddPendingMessage` directly, capture silently escapes. Re-verify every `ConsoleWindow.Print*` overload and which call sites use which. |
-| `RenderTranslucencyPassPatch` (`InWorld/Patches/RenderTranslucencyPassPatch.cs`) — optional, in-world quad inject | `SuperMeshRenderSystem.RenderTranslucencyPass(IViewport viewport, CommandBuffer commandBuffer, bool useCustomRenderPass)` postfix (params reordered in KSA 5482 — harmless because the postfix binds **by name** and the attribute names no arg types; `IViewport` replaced the deleted `Viewport` class in KSA 5402; `GameViewport`/`PartThumbnailViewport` implement it) | `IViewport.OffscreenTarget` as `KSA.Rendering.RenderTarget`; `RenderTarget.{ColorAttachment,DepthAttachment}` (resolve to the MSAA images when multisampled); `IViewport.Size` (`int2`); `ImageBarrierInfo.Presets.{ColorAttachmentReadWrite,DepthStencilAttachmentReadWrite}` (tracked `RenderImage` state — the declared state is the next barrier's source, so it must include the quad's writes; gotcha 32); `CommandBuffer.{PipelineBarrier2,BeginRendering,EndRendering}` (dynamic rendering, `LoadOp.Load`); the **draw-order** guarantee (runs after atmosphere/cloud/ocean; since KSA 5482 rev 5408 the main pass runs MSAA resolve → underwater → sun/global bloom → part-select outline **after** it, so the quad is bloomed — accepted) and the fact that the method **closes its own** `BeginRendering`/`EndRendering` scope before returning; and that the postfix fires for **every** visible viewport KSA renders through `RenderViewport` (secondary kitten cams / crew portraits, whose owned targets share the main target's formats + `GameSettings.GetSampleCount()`) — purrTTY draws with the main camera regardless (`ViewportEx.IsMain()` is the filter if that ever needs gating) | Highest-risk render coupling. Signature drift → in-world terminals vanish. **Draw-order change** (KSA moves atmosphere/ocean after this pass, or restructures `RenderTarget`) → planet-silhouette cutout returns (gotcha 32); a new post-process moved after it changes how the quad looks and consumes its writes through the tracked barrier state. Diff `SuperMeshRenderSystem`, `PlanetTransparenciesRenderer`, the ocean renderer, `PartModelGlass.WriteCommandsColor`, and `KSA.Rendering/RenderTarget`. |
+### 2. Harmony patches
 
-After the diff, if in doubt, confirm the patch still applies by checking the mod log for
-`REQUIRED/optional Harmony patch '…' failed to apply` at runtime.
+All are installed in `BeforeMain` and **throw on a missing target**: `Mod.Patch` and
+`BlastPersistence.Patch` use `AccessTools.Method(...) ?? throw`. Several patches bind original
+parameters **by name**, so a parameter rename in KSA breaks patching even when types are
+unchanged. Verify for each: **type exists · method exists · exact parameter types *and names* ·
+the semantics Blasto depends on**.
 
-**Offline patch-apply check (no game needed).** A throwaway console app (same `Lib.Harmony`
-version as `purrTTY.GameMod.csproj`) can load the built `purrTTY.GameMod.dll` plus the
-`<current-ksa>/dll` assemblies and run `harmony.CreateClassProcessor(type).Patch()` on every patch
-class exactly as `Patcher` does — this catches target/param-name drift that the compiler can't. It
-can also invoke a patched private method on a `RuntimeHelpers.GetUninitializedObject` instance to
-exercise a prefix that skips the original (a pass-through faults in the uninitialized original,
-which is itself the signal). Gotchas: register the `AssemblyLoadContext.Default.Resolving` probe
-(mod bin dir + KSA dll dir) **before** any method that mentions KSA types is JIT-compiled (keep the
-body in a separate `NoInlining` method); `Patch()` returns the generated *replacement* methods
-(`DeclaringType == null`) — use `Harmony.GetPatchInfo`/`GetPatchedMethods` to report targets; and
-`KSA.dll` is **IL-only but flagged x64** (PE32+, no ReadyToRun), so on an arm64 host copy the dll
-folder to scratch and set the copy's COFF `Machine` to `0xAA64` (never touch the snapshot itself).
+| Patch (Blasto file) | KSA target | Binds by name | Depends on | If KSA changes… |
+|---|---|---|---|---|
+| `TerrainBlastRenderer.AfterBuild` postfix | private `PlanetRenderer.BuildRenderPipeline()` (`AccessTools.DeclaredMethod`) | `__instance` | Blasto **re-invokes** it via reflection after swapping `_renderShaderStages` modules and `_renderPipelineLayout`, then harvests the new `_solid`/`_wire` and restores the originals. This assumes the method (a) builds pipelines purely from those fields, (b) writes its results into `_solid`/`_wire`, and (c) does **not destroy** the pipelines currently held in `_solid`/`_wire` before overwriting them. If it did, the re-entrant call would destroy the stock pipelines | Rename → load failure. If the method starts destroying old handles, caching pipelines elsewhere, or building from other fields → stock terrain destroyed or private pipeline built with stock shaders/layout. **Read the whole method in both trees.** |
+| `TerrainBlastRenderer.BeforeRender` prefix / `ReplaceForwardBinding` transpiler / `AfterRender` finalizer | `PlanetRenderer.Render(...)` | `inViewport`, `frameIndex`, `__instance`, `__state`, `__exception` | `Render` reads `_solid`/`_wire`/`_renderPipelineLayout` **during** the call (Blasto swaps them for the duration). The method body contains **exactly one** call to the generic `VkDeviceExtensions.BindDescriptorSets<CommandBuffer>` with 6 parameters `(cmd, bindPoint, layout, firstSet, ReadOnlySpan<VkDescriptorSet>, Span<ByteSize32>)`. That call binds all six forward sets starting at set 0, so span index 2 is set 2. `_planetViewportData[inViewport.ShaderSlot].NearbyCelestial` is the body being drawn. No nested forward render on the same thread | Param rename → load failure. A second bind call, or a different overload or arity → transpiler throws → load failure. **Silent:** the bind no longer starting at set 0, or binding a different set count (index 2 then points at the wrong set). Render caching handles before the prefix runs (swap ignored). A new draw path (e.g. per-chunk binds) bypassing the one call (private pipeline drawn with stock set 2 → shader reads unbound binding 13). |
+| `TerrainBlastRenderer.BeforeNativeDispose` prefix | `PlanetRenderer.Dispose()` | `__instance` | Runs before the native device/renderer is torn down | Rename → load failure. If disposal moves (e.g. renderers stop being disposed individually) → owned Vulkan objects leak or are destroyed after the device. |
+| `BlastSimulation.CapturePostfix` | `VehicleUpdateState.UpdateModules(SimStep)` | `__instance`, `step` | Runs **on physics workers**, after the nozzle states for *this* step are final. See §5 | Rename → load failure. If it moves before nozzle update, or onto the main thread, exposure is off by one step or is racy. |
+| `Mod.DrainCommands` prefix (`Priority.First`) + `BlastSimulation.ApplyPostfix` postfix | `Universe.ApplyVehicleSolvers()` | none | Runs on the **main thread** after workers are joined and solver results applied, before the next dispatch. `JobSystems.WaitAll()` is safe to call in the prefix | If workers are still running here, or the method is renamed or split → samples applied out of order, or a cleared scene picks up old exposure. |
+| `BlastPersistence.Capture` postfix | `GameSave.Populate()` (0 params) | `__instance`, `__runOriginal` | Called during save capture on the **same object** that is later `UncompressedSave.Write()`n (captures are keyed by instance in a `ConditionalWeakTable`) | If `UncompressedSave` stops deriving from `GameSave`, or Populate runs on a different object → "no matching blast snapshot", so the **sidecar is never written** (silent data loss on save). |
+| `BlastPersistence.Written` postfix | `UncompressedSave.Write()` (0 params) | `__result` (bool), `__runOriginal` | `bool` success return; `Directory` (`DirectoryInfo`) is the save folder; `universe.xml` lives there (hashed by `BlastSaveCodec`) | Return-type change → binding failure. **Silent:** KSA defaulting to a **compressed** save format (only `UncompressedSave` is hooked), or renaming/moving `universe.xml`, means sidecars are never written or never validate. |
+| `BlastPersistence.Loading` prefix / `LoadFinished` finalizer | `UncompressedSave.Load()` (0 params) | `__instance`, `__state`, `__exception` | `Universe.DeserializeSave` runs **nested inside** `Load()` (the sidecar read in the prefix is consumed by `AfterDeserialize`). `Program.IsEditorOpen` | If deserialization moves out of `Load()` (deferred, async, next frame) → saved marks never restored and the scene looks like a vanilla load. |
+| `BlastPersistence.BeforeDeserialize` / `AfterDeserialize` | `Universe.DeserializeSave(UniverseData)` | `universeData`, `__runOriginal`, `__state` | Exact 1-param signature; KSA joins workers inside it | Signature/param rename → load failure. |
+| `BlastPersistence.BeforeSystem` prefix | `Universe.LoadSystem(string)` | `id`, `__runOriginal` | New-system entry point; `SystemLibrary.Find(id)` | Param rename → load failure. A new scene-replacement path that skips both this and `DeserializeSave` → old marks leak into the new scene. |
+| `Mod.DrawMenu` postfix | `Program.DrawProgramMenusHook()` | none | KSA calls it inside its main-menu-bar `BeginMenuBar` | Removed → load failure (not optional in Blasto). Called outside a menu bar → `BeginMenu` misbehaves. |
+| `Mod.DrawHiddenUi` prefix | `Program.OnDrawUiConsole()` | none | Called every frame even when the UI is hidden; `Program.DrawUI` static | Removed → load failure. Semantics change → the window draws twice or never while the UI is hidden. |
+| `Mod.BeforeGameDispose` prefix | `Program.Dispose()` | none | Runs **before** KSA destroys particles and the Vulkan device (Blasto frees GPU resources and kills emitters here) | If device teardown moves ahead of `Program.Dispose`, or into another method → use-after-free on exit. |
+| `Mod.GuardTextInput` prefix | `GameSettings.OnKeyAll` | `__result` (`ref bool`) | `bool` return = "handled"; `Program.ConsoleWindow.IsOpen`; `ImGui.GetIO().WantTextInput` | Return-model change → binding failure, or typing in the tuning fields fires game hotkeys. |
 
-### 2. Render / GPU pipeline (Brutal Vulkan + KSA render objects)
+Persistence patches use `Priority.Last` and only observe. They must keep coexisting with other
+mods' save hooks (e.g. Unscience's).
 
-The in-world terminal feature (`purrTTY.GameMod/InWorld/`) is deeply coupled to KSA's
-renderer and offscreen pass. Compile catches type/member renames; it does **not** catch
-semantic changes to formats, sample counts, layouts, or draw order.
+### 3. Private terrain pipeline and shaders (highest risk)
 
-- **`SharedQuadResource.cs`** (`InWorld/Display/`): builds the quad pipelines. Diff:
-  - `ModLibrary.Get<ShaderReference>("UnlitMeshVert")` — the stock unlit-mesh **vertex**
-    shader asset. Asset id rename → throws (feature self-skips). Its **shader interface**
-    (UV out at location 0, a single `mat4` MVP vertex push constant) is assumed by the
-    custom frag `QuadFragGlsl` and the pipeline layout — if KSA changes UnlitMesh's vertex
-    layout or push-constant, the quad renders garbage. Check `UnlitMesh.vert` in decomp.
-  - `Program.OffscreenTarget` (a `KSA.Rendering.RenderTarget`, same object as
-    `Program.MainViewport.OffscreenTarget`): `.Samples`, `.ColorAttachment.Format`,
-    `.DepthAttachment.Format` — pipeline MSAA + attachment formats fed into a
-    `VkPipelineRenderingCreateInfo` (dynamic rendering; there is **no** `VkRenderPass` — KSA rev
-    5154 deleted `Program.OffScreenPass`/`Core.RenderPassState`; `Program.MainPass` is now a
-    `Core.SwapchainPassState`). Format/MSAA change → validation error or silent depth misbehavior.
-  - `RenderCore.ShaderModuleUtils.FromString(...)` — runtime shaderc compile (needs
-    `Brutal.ShaderC`).
-  - Presets: `RenderingPresets.ReverseZDepthStencil.{DepthTestNoWrite,NoDepthTest}`,
-    `Presets.Rasterization.Fill.CullNone`, `Presets.InputAssembly.TriangleList`,
-    `Presets.Entrypoint.Main`. **Reverse-Z** is assumed everywhere — if KSA leaves
-    reverse-Z, depth compare flips.
-  - `Renderer` members: `.Device`, `.Graphics`, `.Allocator`, `.DynamicStateInfo`,
-    `.ViewportState`; `VertexInput`, `BufferEx`, `DescriptorSetLayoutEx`, `VkUtils.StageAndUploadToBuffer`.
-  - **Premultiplied-alpha assumption** (gotcha 28): `QuadFragGlsl` un-premultiplies →
-    gamma-decodes (`pow(2.2)`) → re-premultiplies, because KSA's ImGui backend blends over
-    a transparent clear (premultiplied output) and the stock frag would force alpha=1.
-    If KSA's ImGui compositing or gamma handling changes, the quad's color/opacity is wrong.
-- **`OffscreenRenderTarget.cs`** (`InWorld/`): purrTTY's **own** sampleable colour+depth target (KSA rev 5154 deleted the old `KSA.RenderTarget`/`Framebuffer` it used to wrap). It reproduces the usage flags of the deleted `RenderTarget.BuildAttachments` directly on `ImageEx` and uses `Presets.Sampler.SamplerLinearClamped`. Low KSA coupling now; only the `Presets` sampler and the Brutal Vulkan image/allocator API matter.
-- **`InWorldQuad.cs`** (`InWorld/Display/`): `Program.GetMainCamera()`, `Camera.MVP.{projection,viewProjection}`, `Camera.VPInv.view`, `Program.SetViewport(cmd)`. Camera matrix conventions (row-vector `mvp = model * viewProjection`) are load-bearing — a handedness/convention change silently mislocates/mirrors the quad.
-- **`PerFrameRenderer.cs`** / **`InWorldTerminalInstance.cs`**: `Program.GetRenderer()` (null before renderer live), device queue submit, `Device.WaitIdle()`.
-- **`InWorldTerminalManager.cs`**: `Program.GetRenderer()?.Device.WaitIdle()`; `GameSettings.GetSampleCount()`.
+Files: `Rendering/TerrainAccess.cs`, `TerrainBlastRenderer.cs`, `BlastRenderResources.cs`,
+`BlastDescriptorLayout.cs`, `TerrainShaderSource.cs`, `TerrainBlastShaders.cs`,
+`TerrainGpuCapabilities.cs`, `BlastGpuMark.cs`.
 
-Whole-feature check: diff `SuperMeshRenderSystem`, `OffscreenTarget`, `RenderTarget`,
-`Renderer`, `Camera`, `RenderingPresets`, `Presets`, `ShaderModuleUtils`, and the
-`Brutal.VulkanApi` structs used (`VkRenderingInfo`, `VkRenderingAttachmentInfo`,
-`VkPipelineRenderingCreateInfo`, `ImageTransition`, `ImageBarrierInfo`) between snapshots.
+**Reflection (`TerrainAccess`).** These `PlanetRenderer` private fields are read and written
+by name and type via `AccessTools.FieldRefAccess`:
+`_renderer` (`Core.Renderer`), `_solid`, `_wire` (`VkPipeline`),
+`_renderPipelineLayout` (`VkPipelineLayout`), `_renderShaderStages` (`ShaderStages`),
+`_renderDescriptorSetLayout` (`DescriptorSetLayoutEx`),
+`_cloudShadowsRenderer` (`KSA.Atmosphere.Rendering.CloudShadowsRenderer`) and
+`_planetViewportData` (`PlanetViewportData[]`, indexed by `IViewport.ShaderSlot`).
+A rename or type change throws in the static initializer, which is a load failure. A field that
+keeps its name but **changes meaning** (e.g. `_solid` no longer used for the forward draw, viewport
+data no longer indexed by shader slot) is silent.
 
-### 3. ImGui backend (Brutal.ImGui + its Vulkan impl)
+**Descriptor set 2 clone (`BlastDescriptorLayout`).** Blasto rebuilds set 2 by hand as bindings
+0–12 *copied from the native schema* plus binding 13 (fragment `StorageBuffer`).
+- Runtime check: the native `_renderDescriptorSetLayout.Descriptors` must count **exactly** 5
+  types: `UniformBufferDynamic`×2, `StorageBuffer`×2, `CombinedImageSampler`×2, `SampledImage`×5,
+  `Sampler`×2. Any change refuses the private pipeline (stock kept).
+- **Not checked at runtime: binding numbers, order, and stage flags** are hard-coded (0–1 UBO
+  dynamic, 2–3 SSBO, 4–5 CIS, 6–10 sampled, 11–12 sampler, each with specific V/TC/TE/F/C stage
+  masks). Diff the native set-2 layout creation in `PlanetRenderer` binding by binding. A swap
+  that keeps the counts passes the check and produces an **incompatible layout**: Vulkan
+  validation errors, or garbage bound to stock terrain inputs.
+- Per-frame/per-view sets are filled by `VkCopyDescriptorSet` of bindings 0–12 from
+  `Celestial.TextureSet`. This assumes the body's texture set **is** the native set 2 with that
+  binding layout. Pool sizing in `PoolSizes` mirrors the counts.
+- Slots: `ShaderSlot × Renderer.MaxFramesInFlight + frameIndex`, sized by
+  `ViewportRegistry.MAX_VIEWPORTS`. This assumes `frameIndex < MaxFramesInFlight`, that a slot is
+  host-writable once the native frame fence has retired it, and that `ShaderSlot` stays under
+  `MAX_VIEWPORTS`. `TerrainBlastRenderer` keeps diagnostics for 8 slots.
 
-- **Secondary context / offscreen backend** (`InWorld/OffscreenImGuiBackend.cs`, `OffscreenImGuiContext.cs`): `ImGuiBackendVulkanImpl` with `.CreateInfo { Device, GraphicsQueue, RenderPass, SubPass, MinImageCount, ImageCount, SampleCount, DescriptorPoolSize }`, `.RenderDrawData(drawData, cmd)`, `.Dispose()`. Asserts `MinImageCount>=2`, `ImageCount>=MinImageCount`, `DescriptorPoolSize>0`. The context install/detach reads `ImGui.GetIO().BackendRendererUserData` and `ImGui.GetMainViewport().RendererUserData`. A backend-API change (ctor fields, the single-backend assertion, the userdata slots) breaks in-world rendering.
-- **Kitty-graphics texture registration** (`purrTTY.Display/Ghostty/ImageTextureCache.cs`): `ImGuiBackend.Vulkan.AddTexture(sampler, imageView)` → `ImTextureRef`, `.RemoveTexture(texRef)`; `SimpleVkTexture(...)` ctor; `Renderer.LinearSampler`; shared **1000-slot descriptor pool** assumption (LRU eviction). If `AddTexture`/`ImTextureRef` semantics or the pool budget change, kitty images fail to display or exhaust descriptors. (`InWorldTerminalRenderer.cs` notes `ImTextureRef` is the raw `VkDescriptorSet`.)
-- **Font atlas** (`purrTTY.Display/Rendering/PurrTTYFontManager.cs`): `ImGui.GetIO().Fonts` → `ImFontAtlasPtr.AddFontFromFileTTF(ImString, 32.0f)`; `FontManager.Fonts[name]`. Atlas-API or KSA `FontManager` change → fonts don't load.
-- **IO reads** across `TerminalWindow*.cs`: `ImGui.GetIO().WantTextInput`, character queue, key-state queries, `ImGui.GetMainViewport()`. Mostly stock ImGui (stable), but Brutal's binding versions the exact ptr shapes.
-- **Reflection into ImGui IO** (`ToggleHotkeyBinding.cs:303`): `typeof(ImGuiIOPtr).GetProperty("KeySuper", …)` — a possibly-absent property probed by name. If Brutal renames/removes `KeySuper`, the Super-modifier read silently returns null (no error). This is the **only reflection touchpoint** and it targets ImGui, not KSA game types.
+**Pipeline layout (`BlastRenderResources` ctor).** Blasto recreates the forward layout as six
+sets **in this order**: `GlobalShaderBindings.DescriptorSetLayout`,
+`Program.Instance.TextureSystem.Layout`, private set 2,
+`CloudShadowsRenderer.CloudShadowDescriptorSetLayout`,
+`planet.GetSunShadowRenderer().TerrainShadowMap.MainSetLayout` and
+`Program.GetCSMSystem().DescriptorSetLayout`. It adds one push-constant range of
+`ByteSize.Of<PlanetViewportData.PushConstData>()` (128 bytes) for vertex | tess-eval | fragment.
+Diff the native `_renderPipelineLayout` construction. A seventh set, a reorder, a different
+push-constant size or stage mask, or a new shader-visible set → layout incompatibility at bind
+time.
 
-Diff `Brutal.ImGuiApi` / `Brutal.ImGui` (esp. `ImGuiBackendVulkanImpl`, `ImGuiIOPtr`,
-`ImFontAtlasPtr`) and KSA's `ImGuiBackend` / `FontManager`.
+**Shader stages.** `_renderShaderStages.Count` must be 2 (no tessellation) or 4. Blasto replaces
+the `VertexBit`, `FragmentBit` and (if 4) `TessellationEvaluationBit` modules and keeps the stock
+tess-control module. A new stage, or the tess-control stage starting to forward outputs that
+collide with location 7, needs work.
 
-### 4. Game-state / world API
+**Shader sources (`TerrainBlastShaders` / `TerrainShaderSource`).**
+- `ModLibrary.Get<ShaderReference>("PlanetVert" | "PlanetFrag" | "PlanetTessEvaluation")`,
+  `.ModPath` (an absolute source path read from disk at runtime), `.Stage`;
+  `ShaderCompilerResolve.GetCompileOptionsWithIncludeCallback()` and
+  `ShaderModuleUtils.FromString(device, src, stage, options, pathBytes)`. The include callback must
+  keep resolving relative includes from the original path. An asset-id rename throws, so the
+  build fails and stock terrain is kept.
+- **Exact-text anchors** (each must occur **exactly once**, or the transform throws):
+  - `Planet.frag`: `void main()`, `    // Lighting calculations`, `    outColor = finalColor;`.
+    The injected `BlastoMaterial(blendedDiffuse, roughness, worldNormal)` also requires those
+    three **variable names** at that point, and requires that they still mean albedo / roughness
+    / normal **before** lighting is evaluated.
+  - `Planet.vert`: `void main()`, `    outWorldPosition = worldPos;`.
+  - `PlanetTessEvaluation.tese`: `void main(void)`, the 8-space-indented
+    `\n        outWorldPosition = vec4(worldPos.xyz, 1.0f);` and the 4-space
+    `\n    outWorldPosition = vec4(worldPos.xyz, 1.0f);`. It also relies on a local named
+    `displacedPosition` holding the **displaced** surface point.
+  - The fragment declarations add `layout(location = 7)` varyings and a `set = 2, binding = 13`
+    std430 buffer. Location 7 and binding 13 must still be **unused** by the stock shaders.
+- **Semantic (silent):** the meaning of `worldPos`, meaning a **camera-relative position in CCE
+  orientation**. `BlastRenderResources.Prepare` matches it with
+  `-viewport.GetCamera().GetPositionEgo(body)` rotated through `body.GetCce2Ccf()` and its inverse.
+  If KSA changes the terrain shader's position space or camera-relative origin, marks slide,
+  swim or vanish. Also check that lighting still follows the `// Lighting calculations` anchor,
+  so marks stay lit natively.
+- Offline check: `scripts/validate-shaders.sh <current-ksa>/Content/Core/Shaders` exports Blasto's
+  exact transforms, then compiles and SPIR-V-validates both the standard and the
+  `RAY_QUERIES_SUPPORTED` variants, and links the four stages. It knows about one pre-existing
+  stock `planetNormalTexture` sampler mismatch and refuses any other baseline failure. If a stock
+  change removes or alters that mismatch, update the script's expectation rather than the shaders.
+  Also diff `Content/Core/Shaders/Planet/` and its includes directly between snapshots, because a
+  passing compile doesn't prove the anchors still sit at the right *semantic* point.
 
-Read-only-ish reads of live game state; direct references, so signature changes are
-compile-caught, but **semantic** changes (what "ego space" means, identity vs rebuild on
-decouple) are not.
+**Device and Brutal Vulkan API.** `Renderer.{Device, Allocator, MaxFramesInFlight, GetLimits()}`,
+`KSA.Rendering.Utils.MinStorageBufferOffsetAlignment`, `DescriptorSetLayoutEx.{Descriptors, CreateInfo}`,
+`DescriptorPoolEx`, `BufferEx.{CreateInfo, Map, VkBuffer, BindOffset}`, `MappedMemory`,
+`Device.{CreateDescriptorSetLayout, CreatePipelineLayout, CreateDescriptorPool, AllocateDescriptorSet,
+UpdateDescriptorSets, WaitIdle, Destroy*}`. `TerrainGpuCapabilities` reinterprets limit fields that
+Brutal exposes as **signed `int`** as `uint`. If Brutal changes those to `uint`, the constructor
+call stops compiling (compile-caught), and the unsigned shim can be simplified.
 
-- **`InWorld/VehicleLookup.cs`**: `Universe.CurrentSystem?.All.UnsafeAsList().OfType<Vehicle>()`; `Program.ControlledVehicle`; `Vehicle.Id`; `Vehicle.Parts.Parts`; `Part.SubParts`. Relies on KSA **moving the same `Part` instance** into a new vehicle on decouple/dock (identity follow — gotcha 31). If KSA starts rebuilding parts on reparent, follow-tracking breaks.
-- **`InWorld/Display/InWorldQuad.cs`**: `Vehicle.GetMatrixAsmb2Ego(camera)`, `Vehicle.Asmb2Ego`, `Part.PositionEgo(in double4x4)`, `Part.Asmb2Ego(doubleQuat)`, `Part.Id`, `Part.SubParts`. **Ego-space** transform conventions and the choice to exclude the part's own scale (not baking `MatrixAsmb2Ego`) are semantic assumptions — diff these methods in `Part`/`Vehicle`.
-- **Ray picking**: `Cursor.GetEgoRay(IViewport)` (a `Ray`; purrTTY passes `Program.MainViewport` because quads are placed with the main camera — KSA 5402 deleted the once-per-frame `Cursor.InputRay`, the ray is now `viewport.GetCamera().ScreenToEgoRay(desktopPos - viewport.Position)` on demand), `Ray.RaycastMollerTrumbore(v0,v1,v2,out t)`. Used for click-to-focus and app-mouse mapping in `InWorldTerminalManager.cs` and `InWorldQuad.TryRaycast`. Ego-space assumption must match the transform above.
-- **Numerics** (`Brutal.Numerics`): `double3`, `float3`, `float2`, `float4x4`, `double4x4`, `doubleQuat`, `floatQuat` and their ops (`float3.Transform`, `float4x4.CreateFromQuaternion/CreateTranslation/CreateScale/CreateRotation*`, `floatQuat.Pack`, `double3.Dot`). Row-vector multiply order is assumed throughout.
+**Distant bodies.** Marks render only when `Celestial.IsBillboarded()` is true (near terrain via
+`PlanetRenderer`). `DistantSphereRenderer` is intentionally untouched. If KSA merges or reorganises
+those paths, revisit.
 
-Diff `Universe`, `Vehicle`, `Part`, `Program` (ControlledVehicle/GetMainCamera/GetRenderer),
-`Cursor`, `Ray`, and `Brutal.Numerics`.
+Whole-feature diff list: `KSA/PlanetRenderer.cs` (fields, `BuildRenderPipeline`, `Render`,
+`Dispose`, set-2 and pipeline-layout creation),
+`KSA.Rendering.Planet/PlanetViewportData.cs` (`PushConstData`, `NearbyCelestial`),
+`KSA/Celestial.cs` (`TextureSet`, `IsBillboarded`, `GetCce2Ccf`), `KSA/GlobalShaderBindings.cs`,
+`KSA/ViewportRegistry.cs`, `KSA.Atmosphere.Rendering/CloudShadowsRenderer.cs`, the sun-shadow /
+CSM systems, `RenderCore/ShaderModuleUtils.cs`, `RenderCore.Shaders/ShaderCompilerResolve.cs`,
+`Brutal.VulkanApi/VkDeviceExtensions.cs` (`BindDescriptorSets`),
+`Brutal.VulkanApi.Abstractions/DescriptorSetLayoutEx.cs`, plus `Content/Core/Shaders/Planet/**`.
 
-### 5. Input chain
+### 4. Surface sampling and classification (game-state reads)
 
-Beyond the Harmony patches (§1), purrTTY assumes KSA's **key short-circuit order**:
-`GameSettings.OnKeyAll → Popup.OnKeyAll → ConsoleWindow.OnKey → … → Program.OnKey`. If a
-handler returns `true`, downstream is skipped. Since KSA 5482 `Program.OnKey` runs that
-chain and then calls the private `DispatchKeyEvent`, and **mouse** input has a second way in:
-`Program.OnMouseButton` → `Popup.OnMouseAll` → ImGui `WantCaptureMouse` → (if
-`Input.MouseBound(button)`) `DispatchKeyEvent` — bypassing `OnKeyAll`/`OnKey` entirely, which is
-why `Patch04` gates `DispatchKeyEvent` itself. `Patch03` (`OnKeyAll`) and `Patch01`
-(`Program.OnKey`) sit at two ends of this chain; a reorder or a new early handler can
-change whether the gate/guard actually intercepts. Diff `Program.cs`'s key dispatch and
-`GameSettings.OnKeyAll`. GLFW enums (`GlfwKey/GlfwKeyAction/GlfwModifier/GlfwWindow` from
-`Brutal.GlfwApi`) are used in `Patch01`; `GlfwMouseButton` + `RenderCore.Input.GlfwKeyEvent` in `Patch04`.
+`Simulation/SurfaceProbe.cs`, `SurfaceProfiles.cs`:
+- `Celestial.GetTerrainHeightFromDirCcf(double3 dir, accurate: true)`: radial height in **metres**
+  including procedural modifiers. `Celestial.MeanRadius`, `Celestial.Id`.
+  `BodyTemplate.OceanReference?.Level` (water exclusion).
+- Classification: hard-coded body ids **`Luna`** and **`Mars`** (from `Content/Core/SolSystem.xml`).
+  Then `BodyTemplate.TerrainReference?.BiomeMaterials?.Materials[]` `.BiomeId` / `.BiomeName`
+  (substring-matched: rock/concrete/ice/snow, sand/soil/desert/dust), with
+  `Celestial.SampleBiomeIdMap` / `SampleBiomeControlMap` (4-wide, `X..W`) and
+  `GetAtmosphereReference()`. A renamed body or biome is **silent**: the surface just changes
+  profile.
+- Coordinate frames: everything is **CCF** (body-fixed), double precision.
+  `Vehicle.GetPositionCce()` → `body.GetCce2Ccf()` for the diagnostic test mark;
+  `Program.ControlledVehicle`, `Vehicle.Parent`. A frame-convention change (handedness,
+  CCE↔CCF rotation direction, units) misplaces every mark silently.
 
-### 6. Menu injection
+### 5. Nozzle capture and the worker/main-thread contract
 
-`Program.DrawProgramMenusHook()` (§1 Patch02) and `((IGameViewportLifecycle)Program.MainViewport).SetMenuBarInUse(true)`.
-The `[ModMenuEntry("purrTTY")]` path (`TerminalMod.DrawMenu`) is the *preferred* route
-when the ModMenu companion mod is present, probed via `ModLibrary.Find("ModMenu")`
-(`Patcher.cs`). ModMenu is a separate mod (NuGet `ModMenu.Attributes`), not KSA — but the
-probe and the fallback both depend on KSA's `ModLibrary.Find` and the hook. If the game
-adds a real mod-menu API, prefer migrating to it.
+`Simulation/BlastSimulation.cs`. `Capture` runs on **physics workers** inside
+`VehicleUpdateState.UpdateModules` and must only copy immutable data:
+- `VehicleUpdateState.GetReadOnlyStates()` → `.Origin.Parent` (`Celestial`),
+  `.GetStatesCcf(out pos, out _, out body2Ccf)`, `.Props.CenterOfMassAsmb`;
+  `.UpdateData.RocketNozzles.GetReadOnlyStates()`; `.ReadOnlyVehicle.Id`.
+- `RocketNozzleState`: `Performance.TotalThrust` (actual thrust, already including throttle and
+  ambient conditions, so it is **not** multiplied by throttle again), `ThrustTime` (burn seconds
+  within this step, clamped to `[0, DeltaTime]`), `ThrustLocationVehicleAsmb`,
+  `ThrustDirectionVehicleAsmb` (exhaust = **negative** thrust direction; gimbal already applied).
+  The position is `pos + (location − CoM).Transform(body2Ccf)`.
+- `SimStep.DeltaTime` (steps > 1 s are skipped as warp), `SimStep.NextTime.Seconds()`.
+- Main-thread side: `Universe.GetLastSimStep().NextTime` gates which queued samples are
+  "applied". `Universe.CurrentSystem.All.TryGet(id, out Astronomical)`,
+  `Universe.GetElapsedTime/GetElapsedSeconds()`, `JobSystems.WaitAll()`.
 
-### 7. Lifecycle & ALC (StarMap)
+Silent risks: `ThrustTime` changing meaning (e.g. cumulative instead of per-step), thrust
+location/direction changing frame (vehicle-asmb vs CoM-relative vs CCF), `GetStatesCcf` out-param
+order changing (same types, so it still compiles), `UpdateModules` no longer running per nozzle
+substep, or `ApplyVehicleSolvers` no longer being the post-join apply boundary. Diff
+`KSA/VehicleUpdateState.cs`, `KSA/RocketNozzleState.cs`, `KSA/RocketNozzle.cs`,
+`KSA/ActiveNozzle.cs` (burn-time clipping), `KSA/ReadOnlyPhysicsStates.cs`, `KSA/Universe.cs` and
+`KSA/JobSystems.cs`.
 
-`purrTTY.GameMod/TerminalMod.cs` uses the StarMap attribute set: `[StarMapMod]`,
-`[StarMapImmediateLoad]`, `[StarMapAllModsLoaded]`, `[StarMapAfterGui]`, `[StarMapUnload]`
-(StarMap.API NuGet, currently 0.3.6). These are the **complete** StarMap interface. Also:
-- **Ordering assumptions**: renderer is live only from `AllModsLoaded` onward
-  (`Program.GetRenderer()` null before); ImGui frame active in `AfterGui`.
-- **ALC assembly sharing** (`mod.toml`): `[StarMap] ExportedAssemblies =
-  ["purrTTY.CustomShellContract", "purrTTY.Logging"]` — the published inter-mod ABI that
-  lets gatOS share one `CustomShellRegistry.Instance`. If StarMap changes attribute names,
-  the lifecycle contract, or the ALC import/export resolution, revisit `TerminalMod` +
-  `mod.toml`. (StarMap is the loader, not KSA game code, but a StarMap bump ships
-  alongside KSA builds often enough to check here.)
+### 6. Native dust particles
 
-### 8. Build references & native libs
+`Effects/LandingDust.cs`. An exception during emit sets `_failed`, and dust stays off for the
+session while marks continue. API drift is therefore **Medium**, but semantic drift is invisible:
+- `Program.Instance.ParticleSystem` → `.EmitterPool.Get(1, out acquired)`,
+  `.InitializeEmitter(emitter, reference)`; `GameSettings.Current.Graphics.Particles`.
+- `ParticleEmitter<ParticleUpdateData, ParticleRenderData>`: `.Context.{Astronomical,Vehicle,Part}`,
+  `.Origin = new BubbleOrigin { Parent, Time, BubFrame = BubbleFrame.Ccf, PositionBub, VelocityBub }`,
+  `.LocalOffset` (identity, because CCF spawning **rotates spawn positions by `LocalOffset`** in
+  this build; a change double-rotates or un-rotates dust), `.SpawnRate`, `.Drag`, `.Opacity`
+  (**the channel the volumetric renderer multiplies**; `Extra.z` is *not* opacity),
+  `.ParticleInfo.ParticleSpawnLogic` (a delegate invoked on the **native particle worker**),
+  `.CreateHandle()`, `.Kill()`; `Handle.TryGet()`; `Celestial.AddEmitter/RemoveEmitter`.
+- `ParticleUpdateData.Create(pos, lifetime, size)` + `.Velocity/.Color/.Extra`.
+- `ParticleEmitterReference` object-initializer fields (`Mesh`, `MaxParticles`, `SpawnMode`,
+  `Renderer = ParticleRenderer.Volumetric`, `Updaters` = `SimpleMovement`, `GrowOverLifetime`,
+  `ModelMatrix`, `Age`, `Density` (buoyancy, not opacity), `Drag`, `InheritVelocity`,
+  `VehicleIsParent`, `EmitterRelative`, `ParticleLifespan/Size/Color`, `EmitterExtra`) and the
+  `*Reference` wrapper types.
+- Asset: `ModLibrary.Get<ParticleEmitterReference>("PlanetImpact").Get().ParticleEmitters[0].Get().Mesh`
+  (only the sphere mesh is borrowed). Check `Content/Core/ParticleEmitterAssets.xml`.
 
-In `Directory.Build.props`, `$(KSAFolder)` resolves to `<current-ksa>/dll/` (or
-`KSA_DLL_DIR`, or a per-OS default). Every project's `.csproj` `<Reference>` pulls DLLs
-from there; a **renamed / removed / split** assembly is a compile break. The referenced
-set (verify each still exists in `<current-ksa>/dll/`):
+Diff `KSA.Rendering.Particles/ParticleSystem.cs`, `ParticleEmitter.cs`,
+`ParticleEmitterReference.cs`, `KSA/BubbleOrigin.cs`, and the particle shaders under
+`Content/Core/Shaders/Particles/`.
 
-- `KSA.dll`
-- `Brutal.ImGui`, `Brutal.ImGui.Abstractions`, `Brutal.ImGui.Extensions`
-- `Brutal.Vulkan`, `Brutal.Vulkan.Abstractions`, `Brutal.Vulkan.Vma`
-- `Brutal.Core` (was `Brutal.Core.Common`), `Brutal.{Logging,Numerics,Collections,Strings,Memory}` (were `Brutal.Core.*` before KSA 5638 — Brutal renamed the assemblies, namespaces unchanged)
-- `Brutal.Glfw`, `Brutal.Render.Common`, `Brutal.ShaderC`
-- `Planet.Core`, `Planet.Render.Core`
-- Copied native/loose DLLs (Display csproj `<None>`): `glfw3.dll`, `imgui.dll`, `VulkanEx.dll`
+### 7. UI (ImGui)
 
-`purrTTY.GameMod.csproj` also copies non-KSA deps into the mod (`Ghostty.Vt.dll`,
-`ghostty-vt.dll` native, `Tomlyn`, `StbImageSharp`, `ModMenu.Attributes`,
-`Microsoft.Extensions.Logging.Abstractions`). These are **not** KSA-coupled — the vendored
-`vendor/Ghostty.Vt` VT engine and its native lib are pinned independently and are *not*
-part of this validation (they don't move when KSA moves).
+`Mod.Ui.cs`, `Mod.Tuning.cs`: `Brutal.ImGuiApi` `ImGui.{BeginMenu, MenuItem, EndMenu, Begin, End,
+SetNextWindowSize, Checkbox, DragFloat(ImString, ref float, float, float, float, ImString,
+ImGuiSliderFlags), SetItemTooltip, CollapsingHeader(ImString[, ImGuiTreeNodeFlags]), TextWrapped,
+TextColored, SetClipboardText, GetIO().WantTextInput}`, `ImString` from UTF-8 literals,
+`ImGuiCond`. Blasto relies on `ImGuiSliderFlags.None` **not** clamping typed values to the drag
+range (`AlwaysClamp` semantics). If the Brutal binding changes the default, manual entry beyond the
+drag range breaks silently. These calls are compile-caught except for that flag semantics.
 
-If a Brutal assembly is split or a type moves between assemblies, the fix is usually a
-`<Reference>` add + a `using` change, not logic — but confirm the type didn't also change
-shape.
+### 8. Lifecycle (StarMap)
+
+`Mod.cs`: `[StarMapMod]`, `[StarMapBeforeMain]`, `[StarMapAfterGui]` (`AfterGui(double dt)`),
+`[StarMapUnload]`, and the `ImmediateUnload` property. StarMap.API is pinned at **0.3.6**, with
+Lib.Harmony **2.4.2** as the NuGet fallback; local DLLs win when `STARMAP_DLL_DIR` is set.
+`mod.toml` uses `[StarMap] EntryAssembly = "Blasto"`.
+- **Ordering assumption:** `BeforeMain` runs **before** KSA builds terrain pipelines, so the
+  `BuildRenderPipeline` postfix sees the first build. If KSA or StarMap moves pipeline creation
+  earlier (or BeforeMain later), no private pipeline exists until a graphics rebuild. Marks are
+  then absent, with "Private terrain pipeline unavailable" in diagnostics.
+- Shutdown: `Program.Dispose` prefix (§2) does the real cleanup. `Unload` must stay an idempotent,
+  managed-only no-op afterwards.
+
+StarMap is the loader, not KSA, but StarMap bumps often ship alongside KSA builds, so check here.
+
+### 9. Build references
+
+`Directory.Build.props` resolves `$(KSAFolder)` as `-p:KSAFolder`, then `KSA_DLL_DIR`, then
+`../ksa-game-assemblies/current/dll/`. `Blasto.GameMod.csproj` references (all `Private=false`,
+**all `Condition="Exists(...)"`**): `BepuUtilities`, `BepuPhysics`, `KSA`,
+`Brutal.Core.{Common,Logging,Numerics,Strings,Collections,Memory}`, `Brutal.Interop`,
+`Brutal.Concurrency`, `Brutal.Render.Common`, `Brutal.ShaderC`,
+`Brutal.Vulkan{,.Abstractions,.Vma}`, `Brutal.ImGui{,.Abstractions}`, `Planet.Core` and
+`Planet.Render.Core`.
+
+Because of the `Exists` conditions, a renamed DLL is **silently dropped** and shows up only as
+missing-type errors. Check every name against `<current-ksa>/dll/`. **Known rename:** in KSA
+**2026.10.19.5638**, Brutal renamed `Brutal.Core.Common` → `Brutal.Core` and
+`Brutal.Core.{Logging,Numerics,Strings,Collections,Memory}` → `Brutal.{Logging,Numerics,Strings,Collections,Memory}`.
+Namespaces were unchanged, so the csproj now lists **both** name sets (each `Exists`-conditioned)
+and builds against 5554 and 5638 alike. Keep that pattern for future renames.
+
+`scripts/package.sh` refuses to ship any `KSA.dll`, `Brutal.*`, `Planet.*`, `StarMap.API.dll` or
+`0Harmony.dll`. Keep that intact if references change.
 
 ---
 
-## Build against the new KSA
-
-Point the build at `<current-ksa>/dll/` and rebuild + test. This sweeps all
-compile-visible breaks (§1 signatures on directly-called members, §8 refs):
+## Build and offline checks
 
 ```bash
-# from the purrtty repo root; adjust the env var to the supplied snapshot
-KSA_DLL_DIR="<current-ksa>/dll" dotnet build purrtty.slnx
-KSA_DLL_DIR="<current-ksa>/dll" dotnet test purrtty.slnx --nologo -v quiet
+# from the blasto repo root; point at the supplied snapshot's dll folder
+KSA_DLL_DIR="<current-ksa>/dll" dotnet restore Blasto.slnx
+KSA_DLL_DIR="<current-ksa>/dll" dotnet build Blasto.slnx -c Release --no-restore -m:1
+
+# managed checks: no KSA refs at all, so they exercise none of the game coupling
+dotnet run --project Blasto.Tests -c Release -p:KSAFolder=/missing
+
+# shader anchors + SPIR-V validation + stage linking against the NEW stock shaders
+bash scripts/validate-shaders.sh "<current-ksa>/Content/Core/Shaders"
 ```
 
-(On Windows PowerShell: `$env:KSA_DLL_DIR="<current-ksa>\dll"; dotnet build purrtty.slnx`.)
+`TreatWarningsAsErrors` is on. A clean build only means directly-referenced members still line up.
+`Blasto.Tests` links only portable sources (`Core/`, `BlastSave*`, `TerrainShaderSource`,
+`TerrainGpuCapabilities`, `BlastVisualMath`). It catches anchor drift through
+`--export-shaders`, but nothing else game-side.
 
-A clean build **does not** clear the mod — it means only that directly-referenced members
-still line up. Harmony targets (§1), reflection (§3), asset ids (§2), and every behavioral
-assumption still need the source diff. Tests are backend/logic only (they mock/avoid the
-engine), so they exercise almost none of the KSA coupling.
+**Offline patch-apply harness (no game needed).** Build a throwaway console app in the scratchpad
+with the same `Lib.Harmony` version as the csproj. Have it load the built `Blasto.dll` plus
+`<current-ksa>/dll`, then call `harmony.Patch(...)` on every target listed in §2 with Blasto's
+own hook methods. The easiest way is to invoke `TerrainBlastRenderer.Install`,
+`BlastSimulation.Install` and `BlastPersistence.Install` via reflection. This exercises
+`TerrainAccess` field resolution, Harmony parameter-name binding **and the `ReplaceForwardBinding`
+transpiler** (which runs at patch time and enforces the single 6-arg bind). Gotchas:
+- Simplest driver: `Activator.CreateInstance(Blasto.Mod)` then invoke `BeforeMain`, read the
+  private `_message` (expect `Ready…`), and list `Harmony.GetAllPatchedMethods()` with
+  `Harmony.GetPatchInfo` counts. Expect 14 targets; `Render` has prefix + transpiler + finalizer.
+  `Unload`'s `JobSystems.WaitAll` throws an NRE offline (no game), which is harmless. Harmony also
+  keeps listing unpatched methods (with zero patches).
+- Add a `Microsoft.Extensions.Logging.Abstractions` 10.x package reference to the harness. The
+  game install provides that DLL but the snapshot's `dll/` doesn't, and `BlastPersistence`'s
+  patches fail to generate without it.
+- Register an `AssemblyLoadContext.Default.Resolving` probe (Blasto bin dir + KSA dll dir)
+  **before** any method that mentions KSA types is JIT-compiled. Keep the body in a separate
+  `[MethodImpl(NoInlining)]` method.
+- `Patch()` returns generated replacement methods (`DeclaringType == null`); use
+  `Harmony.GetPatchInfo` / `GetPatchedMethods` to report targets.
+- `KSA.dll` is **IL-only but flagged x64** (PE32+). On an arm64 host, copy the dll folder to
+  scratch and set the copy's COFF `Machine` to `0xAA64`. Never modify the snapshot itself. Only
+  patch files that have a CLR header (data directory 14, at optional-header offset 224 for PE32+ or
+  208 for PE32); native DLLs such as `imgui.dll` must be left alone.
+
+This dev host (ARM macOS) can't run the x64 game, so live checks (`VALIDATION.md` "In-game
+acceptance": Luna test mark, tessellation on/off, multiple viewports, save/load, clean exit) must
+be requested from the user. The in-game **Diagnostics → Copy diagnostics** report shows pipelines,
+build failures, private binds per view and GPU limits. It is the fastest way to confirm a live
+result.
 
 ## Severity triage
 
-- **Critical** — a **required** Harmony patch (`Patch01`, `Patch03`) target drifted, or the
-  input chain reordered: core typing/gating breaks for every user. (`Patch04` is required too, but
-  its drift only leaks *player-bound* mouse actions — no defaults bind a mouse button — so rate it
-  **Medium**.)
-- **High** — render-pipeline coupling (`RenderTranslucencyPassPatch`, `SharedQuadResource`,
-  `OffscreenRenderTarget`, camera conventions) or the ImGui backend changed: in-world
-  terminals break or misrender.
-- **Medium** — an **optional** patch (`Patch02`, `ConsoleWindowPrintPatch`) or an asset id
-  drifted: a feature (fallback menu, game-console capture) silently degrades but the mod
-  stays usable.
-- **Low** — a build ref rename with a mechanical fix; a reflection probe (`KeySuper`) whose
-  absence is already null-tolerant.
+- **Critical**: semantic drift that lets the private pipeline **build and bind but mismatch** KSA:
+  set-2 binding numbers/stages, pipeline-layout set order or push constants, the bind call's set
+  range, `BuildRenderPipeline` destroying the old handles, or `Program.Dispose`/`PlanetRenderer.Dispose`
+  no longer preceding device teardown. These damage **stock terrain or crash the game**, not just
+  Blasto.
+- **High**: anything that makes `BeforeMain` throw (a missing Harmony target or renamed parameter,
+  a `TerrainAccess` field, transpiler shape). The whole mod is off, but loudly and safely. With no
+  version guard, this is what users on an unreviewed build hit first. Also
+  silent mark-placement drift (shader position space, CCE/CCF frames, nozzle frames or
+  `ThrustTime` meaning) and **save-path drift** (sidecar not written or restored = lost marks).
+- **Medium**: runtime schema checks that refuse the private pipeline (stock terrain kept; marks
+  absent), shader-anchor drift caught by `validate-shaders.sh`, dust/particle API or semantics,
+  `PlanetImpact` asset, the `ImGuiSliderFlags` clamp semantics, and the lifecycle-ordering change
+  in §8.
+- **Low**: build-ref renames with a mechanical fix, body/biome name changes affecting only
+  surface profile, and docs text.
 
 ## Output format
 
@@ -301,24 +455,37 @@ Produce a review, not silent edits. For each affected touchpoint:
 
 ```
 ### <touchpoint> — <SEVERITY>
-- KSA delta: <what changed between previous and current, with decomp file:line or version.json commit>
-- purrTTY location: <repo file:symbol>
-- Coupling kind: <harmony | reflection | render/behavioral | game-state | build-ref | asset-id | lifecycle>
-- Impact: <what breaks at runtime/compile, who notices>
+- KSA delta: <what changed between validated and current, with decomp file:line or version.json rev>
+- Blasto location: <repo file:symbol>
+- Coupling kind: <harmony | transpiler | reflection | render/behavioral | shader-anchor | game-state | worker-threading | particles | persistence | ui | lifecycle | build-ref | asset-id>
+- Impact: <what breaks at compile/load/runtime, who notices (Blasto only vs stock terrain/game)>
 - Change needed: <none | mechanical: … | behavioral redesign: …>
 ```
 
 End with a **summary table** (touchpoint · severity · change needed) and an overall verdict:
 *no changes needed* / *mechanical fixes only* / *behavioral work required*. If both
-snapshots weren't available, state exactly which checks you could not perform.
+snapshots, the new `Content/` shaders, or the offline harness weren't available, state exactly
+which checks you could not perform.
+
+## Recording a validated build
+
+After the review clears and the fixes land, all in one change:
+1. `<Reference>` names in `Blasto.GameMod.csproj` if §9 found renames (add the new names; keep
+   the old ones while older builds are still supported).
+2. Pin lines in `README.md`, `INTEGRATION.md` and `VALIDATION.md`, plus the
+   `BlastSaveDocument.GameBuild` default (used only when a document is built outside a save
+   capture). Update `VALIDATION.md`'s automated results to what you actually ran against the new
+   build, and don't carry over claims from the old one.
+3. Rebuild, rerun `Blasto.Tests` and `validate-shaders.sh`, and run `bash scripts/package.sh Release`.
+   Ask the user whether to bump the mod `Version` in the csproj and `mod.toml`.
 
 ## Maintaining this skill
 
-Per the repo's Instruction Maintenance Mandate: when purrTTY's coupling surface changes
-(a new Harmony patch, a new game-state read, a new render-injection point, a dropped one),
-update this catalog in the same work item. The catalog is only useful if it stays an
-exhaustive mirror of the real coupling — a missed touchpoint here is a silent breakage at
-the next KSA bump. Grep signals to re-derive the surface: `HarmonyPatch`, `ModLibrary.`,
-`Program.`, `Universe.`, `Cursor.`, `GameSettings.`, `Renderer`/`Vk*` in `InWorld/`,
-`ImGuiBackend`, `<Reference Include=` in `.csproj`, and the StarMap attributes in
-`TerminalMod.cs`.
+When Blasto's coupling surface changes (a new Harmony patch, a new private field, a new shader
+anchor, a new descriptor binding, a new game-state read or a dropped one), update this catalog
+**and** `INTEGRATION.md` in the same change. The catalog is only useful while it mirrors the real
+coupling exactly; a missing touchpoint here becomes a silent breakage at the next KSA bump. Grep
+signals to re-derive the surface: `Patch(`, `HarmonyMethod`, `AccessTools.`, `FieldRefAccess`,
+`ModLibrary.`, `Program.`, `Universe.`, `GameSettings.`, `Celestial`/`body.`, `ReplaceOnce(` in
+`TerrainShaderSource.cs`, `VkDescriptorType`/`Binding(` in `BlastDescriptorLayout.cs`, the
+`StarMap*` attributes in `Mod.cs`, and `<Reference Include=` in the csproj.

@@ -85,6 +85,32 @@
       <HintPath>$(KSAFolder)/Brutal.Core.Memory.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- KSA 2026.10.19.5638 renamed Brutal.Core.Common to Brutal.Core and the other Brutal.Core.*
+         assemblies to Brutal.* (namespaces unchanged). Whichever set exists is referenced. -->
+    <Reference Include="Brutal.Core" Condition="Exists('$(KSAFolder)/Brutal.Core.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Logging" Condition="Exists('$(KSAFolder)/Brutal.Logging.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Numerics" Condition="Exists('$(KSAFolder)/Brutal.Numerics.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Numerics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Strings" Condition="Exists('$(KSAFolder)/Brutal.Strings.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Strings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Collections" Condition="Exists('$(KSAFolder)/Brutal.Collections.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Collections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Brutal.Memory" Condition="Exists('$(KSAFolder)/Brutal.Memory.dll')">
+      <HintPath>$(KSAFolder)/Brutal.Memory.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Brutal.Interop" Condition="Exists('$(KSAFolder)/Brutal.Interop.dll')">
       <HintPath>$(KSAFolder)/Brutal.Interop.dll</HintPath>
       <Private>false</Private>

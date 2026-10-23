@@ -52,7 +52,7 @@ public sealed partial class Mod
             ApplySettings(_settings);
             _initialized = true;
             _message = "Ready. Launch, land or hover over dry terrain to create blast marks.";
-            Log("Initialized for KSA 2026.10.10.5554.");
+            Log($"Initialized for KSA {typeof(KSA.Program).Assembly.GetName().Version}.");
         }
         catch (Exception ex)
         {
